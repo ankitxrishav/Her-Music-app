@@ -3,7 +3,7 @@
   <p><strong>A deeply connected music streaming experience crafted for couples, with real-time synchronized playback, private Her & Him space, time-synced lyrics, and offline listening.</strong></p>
 
   <p>
-    <a href="package/Her-Music-arm64-v8a.apk"><img src="https://img.shields.io/badge/Download-APK-FF4081?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
+    <a href="https://github.com/ankitxrishav/Her-Music-app/releases/download/v1.4/Her-Music.apk"><img src="https://img.shields.io/badge/Download-APK%20(Direct)-FF4081?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
     <img src="https://img.shields.io/badge/Platform-Android_8.0+-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Platform" />
     <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin" />
     <img src="https://img.shields.io/badge/UI-Jetpack_Compose-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
@@ -38,8 +38,8 @@ Prebuilt APKs are bundled directly in the repository:
 
 | Package | Architecture | Size | Link |
 |---|---|---|---|
-| **Her-Music-arm64-v8a.apk** | 64-bit ARM (recommended) | ~47 MB (Optimized Release) | [📥 Download APK](package/Her-Music-arm64-v8a.apk) |
-| **Her.apk (Universal)** | All Architectures | ~121 MB | Built via `./gradlew assembleUniversalFossDebug` |
+| **Her-Music.apk** | 64-bit ARM (recommended) | ~47 MB (Optimized Release) | [📥 Direct Download](https://github.com/ankitxrishav/Her-Music-app/releases/download/v1.4/Her-Music.apk) |
+| **Her-Music-arm64-v8a.apk** | 64-bit ARM | ~47 MB (Optimized Release) | [📥 Direct Download](https://github.com/ankitxrishav/Her-Music-app/releases/download/v1.4/Her-Music-arm64-v8a.apk) |
 
 ### How to Install
 1. Download [Her-Music-arm64-v8a.apk](package/Her-Music-arm64-v8a.apk) to your Android device.
