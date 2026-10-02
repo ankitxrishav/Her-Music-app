@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "921144839938",
+    "project_id": "her-music-53197",
+    "storage_bucket": "her-music-53197.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:921144839938:android:e5a86d82abd4f592b17c1b",
+        "android_client_info": {
+          "package_name": "com.fenrir.her"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDttl0niPl4AmMLg7vZaG3UXkI1M-JRqHU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:921144839938:android:e5a86d82abd4f592b17c1b",
+        "android_client_info": {
+          "package_name": "com.fenrir.her.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDttl0niPl4AmMLg7vZaG3UXkI1M-JRqHU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
