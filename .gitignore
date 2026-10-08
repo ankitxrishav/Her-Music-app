@@ -34,3 +34,4 @@ lastfm-empty/build/
 
 # Logs
 *.log
+.vscode/

@@ -244,6 +244,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 dependencies {
+  implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
   implementation(project(":core"))
   implementation(project(":playback"))
 

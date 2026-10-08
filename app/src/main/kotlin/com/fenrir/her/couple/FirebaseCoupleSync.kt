@@ -1,16 +1,21 @@
 package com.fenrir.her.couple
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
+import org.eclipse.paho.client.mqttv3.MqttAsyncClient
+import org.eclipse.paho.client.mqttv3.MqttCallback
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions
+import org.eclipse.paho.client.mqttv3.MqttMessage
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 @kotlinx.serialization.Serializable
 data class CoupleInvite(
@@ -40,203 +45,228 @@ data class CoupleLivePlayback(
 )
 
 object FirebaseCoupleSync {
-  const val DEFAULT_BASE_URL = "https://her-music-53197-default-rtdb.firebaseio.com"
-  private const val RELAY_BASE_URL = "https://ntfy.sh"
-  private const val PROJECT_TAG = "her_sync_53197"
-  private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+  private val brokers = listOf(
+    "tcp://broker.emqx.io:1883",
+    "tcp://broker.hivemq.com:1883",
+    "tcp://test.mosquitto.org:1883"
+  )
 
-  private val client = OkHttpClient.Builder()
-    .connectTimeout(5, TimeUnit.SECONDS)
-    .readTimeout(5, TimeUnit.SECONDS)
-    .writeTimeout(5, TimeUnit.SECONDS)
-    .build()
+  private var client: MqttAsyncClient? = null
+  private var brokerIndex = 0
+  private var isConnecting = false
+  private var appContext: Context? = null
 
   private val jsonParser = Json {
     ignoreUnknownKeys = true
     isLenient = true
   }
 
-  private var workingFirebaseUrl: String? = null
-  private var lastFirebaseCheckTime: Long = 0L
+  private val subscribedTopics = ConcurrentHashMap.newKeySet<String>()
+  private val invitesCache = ConcurrentHashMap<String, CoupleInvite>()
+  private val liveCache = ConcurrentHashMap<String, CoupleLivePlayback>()
+  private val pushCache = ConcurrentHashMap<String, CouplePushSong>()
+  private val chatCache = ConcurrentHashMap<String, MutableList<CoupleChatMessage>>()
+  private val radioCache = ConcurrentHashMap<String, RadioBroadcastSession>()
+  private val dailyCache = ConcurrentHashMap<String, Pair<String, String>>()
+  private val deviceCache = ConcurrentHashMap<String, DeviceSyncPayload>()
 
-  private val candidateFirebaseUrls = listOf(
-    "https://her-music-53197-default-rtdb.firebaseio.com",
-    "https://her-music-53197-default-rtdb.asia-southeast1.firebasedatabase.app",
-    "https://her-music-53197-default-rtdb.europe-west1.firebasedatabase.app",
-    "https://her-music-53197.firebaseio.com"
-  )
+  private val _liveFlow = MutableStateFlow<CoupleLivePlayback?>(null)
+  val liveFlow: StateFlow<CoupleLivePlayback?> = _liveFlow.asStateFlow()
 
-  fun getBaseUrl(customUrl: String? = null): String {
-    val clean = customUrl?.trim().orEmpty()
-    if (clean.isNotBlank() && (clean.startsWith("http://") || clean.startsWith("https://"))) {
-      return clean.removeSuffix("/")
-    }
-    return workingFirebaseUrl ?: DEFAULT_BASE_URL
+  private val _pushFlow = MutableStateFlow<CouplePushSong?>(null)
+  val pushFlow: StateFlow<CouplePushSong?> = _pushFlow.asStateFlow()
+
+  private val _deviceSyncFlow = MutableStateFlow<DeviceSyncPayload?>(null)
+  val deviceSyncFlow: StateFlow<DeviceSyncPayload?> = _deviceSyncFlow.asStateFlow()
+
+  fun init(context: Context) {
+    appContext = context.applicationContext
   }
 
-  private suspend fun getWorkingFirebase(customUrl: String? = null): String? = withContext(Dispatchers.IO) {
-    val custom = customUrl?.trim().orEmpty()
-    if (custom.isNotBlank() && (custom.startsWith("http://") || custom.startsWith("https://"))) {
-      return@withContext custom.removeSuffix("/")
-    }
-    val now = System.currentTimeMillis()
-    if (workingFirebaseUrl != null && (now - lastFirebaseCheckTime) < 60_000L) {
-      return@withContext workingFirebaseUrl
-    }
-    lastFirebaseCheckTime = now
-    for (url in candidateFirebaseUrls) {
+  fun hashEmail(email: String): String {
+    val clean = email.trim().lowercase()
+    if (clean.isBlank()) return ""
+    val md = MessageDigest.getInstance("SHA-256")
+    val bytes = md.digest(clean.toByteArray(Charsets.UTF_8))
+    return bytes.joinToString("") { "%02x".format(it) }.take(16)
+  }
+
+  fun calculateSpaceId(codeA: String, codeB: String): String {
+    val a = codeA.trim().uppercase()
+    val b = codeB.trim().uppercase()
+    return listOf(a, b).sorted().joinToString("-")
+  }
+
+  fun calculateEmailSpaceId(emailA: String, emailB: String): String {
+    val a = hashEmail(emailA)
+    val b = hashEmail(emailB)
+    if (a.isBlank() || b.isBlank()) return ""
+    return "couple_" + listOf(a, b).sorted().joinToString("_")
+  }
+
+  suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
+    if (client?.isConnected == true) return@withContext true
+    if (isConnecting) return@withContext false
+    isConnecting = true
+
+    for (attempt in 0 until brokers.size) {
+      val brokerUri = brokers[(brokerIndex + attempt) % brokers.size]
       try {
-        val req = Request.Builder().url("$url/.json?shallow=true").get().build()
-        client.newCall(req).execute().use { res ->
-          if (res.isSuccessful || res.code == 401) {
-            workingFirebaseUrl = url
-            return@withContext url
+        val clientId = "her_android_" + System.currentTimeMillis() + "_" + (1000..9999).random()
+        val c = MqttAsyncClient(brokerUri, clientId, MemoryPersistence())
+        c.setCallback(object : MqttCallback {
+          override fun connectionLost(cause: Throwable?) {
+            subscribedTopics.clear()
           }
+
+          override fun deliveryComplete(token: IMqttDeliveryToken?) {}
+
+          override fun messageArrived(topic: String?, message: MqttMessage?) {
+            val t = topic ?: return
+            val body = message?.payload?.toString(Charsets.UTF_8) ?: return
+            handleIncoming(t, body)
+          }
+        })
+
+        val options = MqttConnectOptions().apply {
+          isAutomaticReconnect = true
+          isCleanSession = true
+          connectionTimeout = 5
+          keepAliveInterval = 30
+        }
+
+        val token = c.connect(options)
+        token.waitForCompletion(4000)
+
+        if (c.isConnected) {
+          client = c
+          brokerIndex = (brokerIndex + attempt) % brokers.size
+          isConnecting = false
+          resubscribeAll()
+          return@withContext true
         }
       } catch (_: Exception) {}
     }
-    null
+
+    isConnecting = false
+    false
   }
 
-  private suspend fun publishRelay(topicSuffix: String, payload: String): Boolean = withContext(Dispatchers.IO) {
-    try {
-      val cleanTopic = "${PROJECT_TAG}_${topicSuffix.replace(Regex("[^a-zA-Z0-9_-]"), "_")}"
-      val url = "$RELAY_BASE_URL/$cleanTopic"
-      val req = Request.Builder()
-        .url(url)
-        .post(payload.toRequestBody(jsonMediaType))
-        .build()
-      client.newCall(req).execute().use { it.isSuccessful }
-    } catch (_: Exception) {
-      false
+  private fun resubscribeAll() {
+    val topics = subscribedTopics.toList()
+    subscribedTopics.clear()
+    for (t in topics) {
+      subscribe(t)
     }
   }
 
-  private suspend fun pollRelay(topicSuffix: String, sinceAll: Boolean = false): List<String> = withContext(Dispatchers.IO) {
+  fun subscribe(topic: String) {
+    if (subscribedTopics.contains(topic)) return
+    subscribedTopics.add(topic)
     try {
-      val cleanTopic = "${PROJECT_TAG}_${topicSuffix.replace(Regex("[^a-zA-Z0-9_-]"), "_")}"
-      val url = "$RELAY_BASE_URL/$cleanTopic/json?poll=1${if (sinceAll) "&since=all" else ""}"
-      val req = Request.Builder().url(url).get().build()
-      client.newCall(req).execute().use { res ->
-        if (!res.isSuccessful) return@withContext emptyList()
-        val text = res.body?.string().orEmpty()
-        text.lineSequence()
-          .filter { it.isNotBlank() }
-          .mapNotNull { line ->
-            try {
-              val elem = jsonParser.parseToJsonElement(line)
-              if (elem is JsonObject && elem["event"]?.jsonPrimitive?.content == "message") {
-                elem["message"]?.jsonPrimitive?.content
-              } else null
-            } catch (_: Exception) {
-              null
-            }
-          }
-          .toList()
+      if (client?.isConnected == true) {
+        client?.subscribe(topic, 1)
       }
-    } catch (_: Exception) {
-      emptyList()
-    }
+    } catch (_: Exception) {}
   }
 
-  suspend fun testConnection(customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+  suspend fun publish(topic: String, payload: String, retain: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+    ensureConnected()
+    val c = client ?: return@withContext false
+    if (!c.isConnected) return@withContext false
     try {
-      val fbUrl = getWorkingFirebase(customUrl)
-      if (fbUrl != null) return@withContext true
-      val req = Request.Builder().url("$RELAY_BASE_URL/${PROJECT_TAG}_health").head().build()
-      client.newCall(req).execute().use { it.isSuccessful }
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun registerInvite(code: String, role: String, name: String, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
-    if (code.isBlank()) return@withContext false
-    try {
-      val invite = CoupleInvite(
-        code = code,
-        role = role,
-        name = name,
-        matched = false,
-        timestamp = System.currentTimeMillis()
-      )
-      val payload = jsonParser.encodeToString(CoupleInvite.serializer(), invite)
-      publishRelay("inv_$code", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/invites/$code.json"
-        val request = Request.Builder().url(url).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(request).execute().close()
+      val message = MqttMessage(payload.toByteArray(Charsets.UTF_8)).apply {
+        qos = 1
+        isRetained = retain
       }
+      val token = c.publish(topic, message)
+      token.waitForCompletion(3000)
       true
     } catch (_: Exception) {
       false
     }
   }
 
-  suspend fun getInvite(code: String, customUrl: String? = null): CoupleInvite? = withContext(Dispatchers.IO) {
-    if (code.isBlank()) return@withContext null
+  private fun handleIncoming(topic: String, payload: String) {
+    if (payload.isBlank()) return
     try {
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/invites/$code.json"
-        val request = Request.Builder().url(url).get().build()
-        val fromFb = client.newCall(request).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              jsonParser.decodeFromString(CoupleInvite.serializer(), body)
-            } else null
-          } else null
+      when {
+        topic.startsWith("her_music/space/") && topic.endsWith("/live") -> {
+          val live = jsonParser.decodeFromString<CoupleLivePlayback>(payload)
+          val spaceId = topic.split("/")[2]
+          liveCache["${spaceId}_${live.senderRole.lowercase()}"] = live
+          _liveFlow.value = live
         }
-        if (fromFb != null) return@withContext fromFb
+        topic.startsWith("her_music/space/") && topic.endsWith("/push") -> {
+          val push = jsonParser.decodeFromString<CouplePushSong>(payload)
+          val spaceId = topic.split("/")[2]
+          pushCache[spaceId] = push
+          _pushFlow.value = push
+          appContext?.let { ctx ->
+            PushSongNotificationManager.showPushSongNotification(ctx, push)
+          }
+        }
+        topic.startsWith("her_music/space/") && topic.endsWith("/chat") -> {
+          val chat = jsonParser.decodeFromString<CoupleChatMessage>(payload)
+          val spaceId = topic.split("/")[2]
+          val list = chatCache.getOrPut(spaceId) { mutableListOf() }
+          synchronized(list) {
+            if (list.none { it.id == chat.id }) {
+              list.add(chat)
+            }
+          }
+        }
+        topic.startsWith("her_music/space/") && topic.endsWith("/radio") -> {
+          val radio = RadioBroadcastSerialization.parse(payload)
+          val spaceId = topic.split("/")[2]
+          radioCache[spaceId] = radio
+        }
+        topic.startsWith("her_music/invite/") -> {
+          val inv = jsonParser.decodeFromString<CoupleInvite>(payload)
+          val code = topic.split("/").last()
+          invitesCache[code] = inv
+        }
+        topic.startsWith("her_music/user/") && topic.endsWith("/device_sync") -> {
+          val dev = jsonParser.decodeFromString<DeviceSyncPayload>(payload)
+          deviceCache[dev.email] = dev
+          _deviceSyncFlow.value = dev
+        }
       }
+    } catch (_: Exception) {}
+  }
 
-      val relayMessages = pollRelay("inv_$code")
-      relayMessages.lastOrNull()?.let { msg ->
-        try {
-          return@withContext jsonParser.decodeFromString(CoupleInvite.serializer(), msg)
-        } catch (_: Exception) {}
-      }
-      null
-    } catch (_: Exception) {
-      null
-    }
+  suspend fun testConnection(customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    ensureConnected()
+  }
+
+  suspend fun registerInvite(code: String, role: String, name: String, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    val clean = code.trim().uppercase()
+    if (clean.isBlank()) return@withContext false
+    subscribe("her_music/invite/$clean")
+    val invite = CoupleInvite(
+      code = clean,
+      role = role,
+      name = name,
+      matched = false,
+      timestamp = System.currentTimeMillis()
+    )
+    invitesCache[clean] = invite
+    publish("her_music/invite/$clean", jsonParser.encodeToString(invite), retain = true)
+  }
+
+  suspend fun getInvite(code: String, customUrl: String? = null): CoupleInvite? = withContext(Dispatchers.IO) {
+    val clean = code.trim().uppercase()
+    if (clean.isBlank()) return@withContext null
+    subscribe("her_music/invite/$clean")
+    invitesCache[clean]
   }
 
   suspend fun checkInviteMatch(code: String, customUrl: String? = null): CoupleInvite? = withContext(Dispatchers.IO) {
-    if (code.isBlank()) return@withContext null
-    try {
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/invites/$code.json"
-        val req = Request.Builder().url(url).get().build()
-        val fromFb = client.newCall(req).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              val inv = jsonParser.decodeFromString(CoupleInvite.serializer(), body)
-              if (inv.matched && inv.spaceId.isNotBlank()) inv else null
-            } else null
-          } else null
-        }
-        if (fromFb != null) return@withContext fromFb
-      }
-
-      val relayMessages = pollRelay("inv_$code")
-      for (msg in relayMessages.reversed()) {
-        try {
-          val inv = jsonParser.decodeFromString(CoupleInvite.serializer(), msg)
-          if (inv.matched && inv.spaceId.isNotBlank()) {
-            return@withContext inv
-          }
-        } catch (_: Exception) {}
-      }
-      null
-    } catch (_: Exception) {
-      null
-    }
+    val clean = code.trim().uppercase()
+    if (clean.isBlank()) return@withContext null
+    subscribe("her_music/invite/$clean")
+    val inv = invitesCache[clean]
+    if (inv != null && inv.matched && inv.spaceId.isNotBlank()) inv else null
   }
 
   suspend fun linkInvite(
@@ -246,299 +276,52 @@ object FirebaseCoupleSync {
     myName: String,
     customUrl: String? = null
   ): Boolean = withContext(Dispatchers.IO) {
-    if (partnerCode.isBlank() || myCode.isBlank()) return@withContext false
-    try {
-      val space = com.fenrir.her.auth.CoupleAuthGuard.calculateSpaceId(myCode, partnerCode)
-      val now = System.currentTimeMillis()
+    val pCode = partnerCode.trim().uppercase()
+    val mCode = myCode.trim().uppercase()
+    if (pCode.isBlank() || mCode.isBlank()) return@withContext false
 
-      val partnerUpdate = CoupleInvite(
-        code = partnerCode,
-        matched = true,
-        partnerCode = myCode,
-        partnerName = myName,
-        partnerRole = myRole,
-        spaceId = space,
-        timestamp = now
-      )
-      val partnerJson = jsonParser.encodeToString(CoupleInvite.serializer(), partnerUpdate)
-      publishRelay("inv_$partnerCode", partnerJson)
+    val space = calculateSpaceId(mCode, pCode)
+    val now = System.currentTimeMillis()
 
-      val myUpdate = CoupleInvite(
-        code = myCode,
-        role = myRole,
-        name = myName,
-        matched = true,
-        partnerCode = partnerCode,
-        spaceId = space,
-        timestamp = now
-      )
-      val myJson = jsonParser.encodeToString(CoupleInvite.serializer(), myUpdate)
-      publishRelay("inv_$myCode", myJson)
-      publishRelay("spc_${space}_info", """{"spaceId":"$space","createdAt":$now}""")
+    val partnerUpdate = CoupleInvite(
+      code = pCode,
+      matched = true,
+      partnerCode = mCode,
+      partnerName = myName,
+      partnerRole = myRole,
+      spaceId = space,
+      timestamp = now
+    )
+    invitesCache[pCode] = partnerUpdate
+    publish("her_music/invite/$pCode", jsonParser.encodeToString(partnerUpdate), retain = true)
 
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val urlPartner = "$fb/invites/$partnerCode.json"
-        val reqPartner = Request.Builder().url(urlPartner).patch(partnerJson.toRequestBody(jsonMediaType)).build()
-        client.newCall(reqPartner).execute().close()
-
-        val urlMine = "$fb/invites/$myCode.json"
-        val reqMine = Request.Builder().url(urlMine).put(myJson.toRequestBody(jsonMediaType)).build()
-        client.newCall(reqMine).execute().close()
-
-        val urlSpace = "$fb/spaces/$space/info.json"
-        val reqSpace = Request.Builder().url(urlSpace).put("""{"spaceId":"$space","createdAt":$now}""".toRequestBody(jsonMediaType)).build()
-        client.newCall(reqSpace).execute().close()
-      }
-
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun pushSong(spaceId: String, song: CouplePushSong, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext false
-    try {
-      val payload = jsonParser.encodeToString(CouplePushSong.serializer(), song)
-      publishRelay("spc_${spaceId}_push", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/push_song.json"
-        val request = Request.Builder().url(url).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(request).execute().close()
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun fetchLatestPushSong(spaceId: String, customUrl: String? = null): CouplePushSong? = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext null
-    try {
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/push_song.json"
-        val request = Request.Builder().url(url).get().build()
-        val fromFb = client.newCall(request).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              jsonParser.decodeFromString(CouplePushSong.serializer(), body)
-            } else null
-          } else null
-        }
-        if (fromFb != null) return@withContext fromFb
-      }
-
-      val msgs = pollRelay("spc_${spaceId}_push")
-      msgs.lastOrNull()?.let {
-        try {
-          return@withContext jsonParser.decodeFromString(CouplePushSong.serializer(), it)
-        } catch (_: Exception) {}
-      }
-      null
-    } catch (_: Exception) {
-      null
-    }
-  }
-
-  suspend fun sendChatMessage(spaceId: String, message: CoupleChatMessage, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext false
-    try {
-      val payload = jsonParser.encodeToString(CoupleChatMessage.serializer(), message)
-      publishRelay("spc_${spaceId}_chat", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/messages/${message.id}.json"
-        val request = Request.Builder().url(url).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(request).execute().close()
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun fetchChatMessages(spaceId: String, customUrl: String? = null): List<CoupleChatMessage> = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext emptyList()
-    val result = mutableMapOf<String, CoupleChatMessage>()
-    try {
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/messages.json"
-        val request = Request.Builder().url(url).get().build()
-        client.newCall(request).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              val element = jsonParser.parseToJsonElement(body)
-              if (element is JsonObject) {
-                element.values.forEach {
-                  try {
-                    val msg = jsonParser.decodeFromString(CoupleChatMessage.serializer(), it.toString())
-                    result[msg.id] = msg
-                  } catch (_: Exception) {}
-                }
-              }
-            }
-          }
-        }
-      }
-
-      val relayMsgs = pollRelay("spc_${spaceId}_chat", sinceAll = true)
-      for (line in relayMsgs) {
-        try {
-          val msg = jsonParser.decodeFromString(CoupleChatMessage.serializer(), line)
-          result[msg.id] = msg
-        } catch (_: Exception) {}
-      }
-
-      result.values.sortedBy { it.timestamp }
-    } catch (_: Exception) {
-      result.values.sortedBy { it.timestamp }
-    }
-  }
-
-  suspend fun broadcastRadio(spaceId: String, session: RadioBroadcastSession, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext false
-    try {
-      val payload = RadioBroadcastSerialization.serialize(session)
-      publishRelay("spc_${spaceId}_radio", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/radio.json"
-        val request = Request.Builder().url(url).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(request).execute().close()
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun fetchRadioBroadcast(spaceId: String, customUrl: String? = null): RadioBroadcastSession? = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext null
-    try {
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/radio.json"
-        val request = Request.Builder().url(url).get().build()
-        val fromFb = client.newCall(request).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              RadioBroadcastSerialization.parse(body)
-            } else null
-          } else null
-        }
-        if (fromFb != null) return@withContext fromFb
-      }
-
-      val msgs = pollRelay("spc_${spaceId}_radio")
-      msgs.lastOrNull()?.let {
-        return@withContext RadioBroadcastSerialization.parse(it)
-      }
-      null
-    } catch (_: Exception) {
-      null
-    }
-  }
-
-  suspend fun submitDailyAnswer(spaceId: String, dateKey: String, role: String, answer: String, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank() || dateKey.isBlank()) return@withContext false
-    try {
-      val isHer = role.equals("HER", ignoreCase = true)
-      val payload = """{"role":"${if (isHer) "HER" else "HIM"}","answer":${jsonParser.encodeToString(answer)},"timestamp":${System.currentTimeMillis()}}"""
-      publishRelay("spc_${spaceId}_daily_$dateKey", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val field = if (isHer) "herAnswer" else "himAnswer"
-        val patchPayload = "{\"$field\": ${jsonParser.encodeToString(answer)}}"
-        val url = "$fb/spaces/$spaceId/daily_answers/$dateKey.json"
-        val request = Request.Builder().url(url).patch(patchPayload.toRequestBody(jsonMediaType)).build()
-        client.newCall(request).execute().close()
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  suspend fun fetchDailyAnswers(spaceId: String, dateKey: String, customUrl: String? = null): Pair<String, String>? = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank() || dateKey.isBlank()) return@withContext null
-    try {
-      var him = ""
-      var her = ""
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/daily_answers/$dateKey.json"
-        val req = Request.Builder().url(url).get().build()
-        client.newCall(req).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              val element = jsonParser.parseToJsonElement(body)
-              if (element is JsonObject) {
-                him = element["himAnswer"]?.jsonPrimitive?.content ?: ""
-                her = element["herAnswer"]?.jsonPrimitive?.content ?: ""
-              }
-            }
-          }
-        }
-      }
-
-      val msgs = pollRelay("spc_${spaceId}_daily_$dateKey", sinceAll = true)
-      for (line in msgs) {
-        try {
-          val elem = jsonParser.parseToJsonElement(line)
-          if (elem is JsonObject) {
-            val r = elem["role"]?.jsonPrimitive?.content.orEmpty()
-            val ans = elem["answer"]?.jsonPrimitive?.content.orEmpty()
-            if (r.equals("HER", ignoreCase = true)) {
-              if (ans.isNotBlank()) her = ans
-            } else {
-              if (ans.isNotBlank()) him = ans
-            }
-          }
-        } catch (_: Exception) {}
-      }
-
-      if (him.isNotBlank() || her.isNotBlank()) Pair(him, her) else null
-    } catch (_: Exception) {
-      null
-    }
+    val myUpdate = CoupleInvite(
+      code = mCode,
+      role = myRole,
+      name = myName,
+      matched = true,
+      partnerCode = pCode,
+      partnerRole = if (pCode.startsWith("HER")) "HER" else "HIM",
+      spaceId = space,
+      timestamp = now
+    )
+    invitesCache[mCode] = myUpdate
+    publish("her_music/invite/$mCode", jsonParser.encodeToString(myUpdate), retain = true)
+    true
   }
 
   suspend fun broadcastLivePlayback(
     spaceId: String,
-    playback: CoupleLivePlayback,
+    live: CoupleLivePlayback,
     customUrl: String? = null
   ): Boolean = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext false
-    try {
-      val roleKey = playback.senderRole.lowercase()
-      val payload = jsonParser.encodeToString(CoupleLivePlayback.serializer(), playback)
-      publishRelay("spc_${spaceId}_pb_$roleKey", payload)
-
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/playback_$roleKey.json"
-        val req = Request.Builder().url(url).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(req).execute().close()
-        val legUrl = "$fb/spaces/$spaceId/live_playback.json"
-        val legReq = Request.Builder().url(legUrl).put(payload.toRequestBody(jsonMediaType)).build()
-        client.newCall(legReq).execute().close()
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/live"
+    subscribe(topic)
+    liveCache["${clean}_${live.senderRole.lowercase()}"] = live
+    _liveFlow.value = live
+    publish(topic, jsonParser.encodeToString(live), retain = true)
   }
 
   suspend fun fetchPartnerLivePlayback(
@@ -546,41 +329,102 @@ object FirebaseCoupleSync {
     partnerRole: String,
     customUrl: String? = null
   ): CoupleLivePlayback? = withContext(Dispatchers.IO) {
-    if (spaceId.isBlank()) return@withContext null
-    try {
-      val roleKey = partnerRole.lowercase()
-      val fb = getWorkingFirebase(customUrl)
-      if (fb != null) {
-        val url = "$fb/spaces/$spaceId/playback_$roleKey.json"
-        val req = Request.Builder().url(url).get().build()
-        val fromFb = client.newCall(req).execute().use { response ->
-          if (response.isSuccessful) {
-            val body = response.body?.string()
-            if (!body.isNullOrBlank() && body != "null") {
-              jsonParser.decodeFromString(CoupleLivePlayback.serializer(), body)
-            } else null
-          } else null
-        }
-        if (fromFb != null) return@withContext fromFb
-      }
-
-      val msgs = pollRelay("spc_${spaceId}_pb_$roleKey")
-      msgs.lastOrNull()?.let {
-        try {
-          return@withContext jsonParser.decodeFromString(CoupleLivePlayback.serializer(), it)
-        } catch (_: Exception) {}
-      }
-      null
-    } catch (_: Exception) {
-      null
-    }
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext null
+    val topic = "her_music/space/$clean/live"
+    subscribe(topic)
+    liveCache["${clean}_${partnerRole.lowercase()}"]
   }
 
-  suspend fun fetchLivePlayback(
-    spaceId: String,
-    customUrl: String? = null
-  ): CoupleLivePlayback? = withContext(Dispatchers.IO) {
-    fetchPartnerLivePlayback(spaceId, "", customUrl)
+  suspend fun fetchLivePlayback(spaceId: String, customUrl: String? = null): CoupleLivePlayback? = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext null
+    subscribe("her_music/space/$clean/live")
+    liveCache["${clean}_her"] ?: liveCache["${clean}_him"]
+  }
+
+  suspend fun pushSong(spaceId: String, song: CouplePushSong, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/push"
+    subscribe(topic)
+    pushCache[clean] = song
+    _pushFlow.value = song
+    publish(topic, jsonParser.encodeToString(song), retain = true)
+  }
+
+  suspend fun fetchLatestPushSong(spaceId: String, customUrl: String? = null): CouplePushSong? = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext null
+    subscribe("her_music/space/$clean/push")
+    pushCache[clean]
+  }
+
+  suspend fun sendChatMessage(spaceId: String, message: CoupleChatMessage, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/chat"
+    subscribe(topic)
+    val list = chatCache.getOrPut(clean) { mutableListOf() }
+    synchronized(list) {
+      if (list.none { it.id == message.id }) {
+        list.add(message)
+      }
+    }
+    publish(topic, jsonParser.encodeToString(message))
+  }
+
+  suspend fun fetchChatMessages(spaceId: String, customUrl: String? = null): List<CoupleChatMessage> = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext emptyList()
+    subscribe("her_music/space/$clean/chat")
+    chatCache[clean]?.toList() ?: emptyList()
+  }
+
+  suspend fun broadcastRadio(spaceId: String, session: RadioBroadcastSession, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/radio"
+    subscribe(topic)
+    radioCache[clean] = session
+    publish(topic, RadioBroadcastSerialization.serialize(session), retain = true)
+  }
+
+  suspend fun fetchRadioBroadcast(spaceId: String, customUrl: String? = null): RadioBroadcastSession? = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext null
+    subscribe("her_music/space/$clean/radio")
+    radioCache[clean]
+  }
+
+  suspend fun submitDailyAnswer(spaceId: String, dateKey: String, role: String, answer: String, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/daily/$dateKey/${role.lowercase()}"
+    publish(topic, answer, retain = true)
+  }
+
+  suspend fun fetchDailyAnswers(spaceId: String, dateKey: String, customUrl: String? = null): Pair<String, String>? = withContext(Dispatchers.IO) {
+    dailyCache[dateKey]
+  }
+
+  suspend fun broadcastDeviceSync(payload: DeviceSyncPayload): Boolean = withContext(Dispatchers.IO) {
+    if (payload.email.isBlank()) return@withContext false
+    val hash = hashEmail(payload.email)
+    val topic = "her_music/user/$hash/device_sync"
+    subscribe(topic)
+    deviceCache[payload.email] = payload
+    _deviceSyncFlow.value = payload
+    publish(topic, jsonParser.encodeToString(payload), retain = true)
+  }
+
+  fun subscribeDeviceSync(email: String) {
+    if (email.isBlank()) return
+    val hash = hashEmail(email)
+    subscribe("her_music/user/$hash/device_sync")
+  }
+
+  fun getLatestDeviceSync(email: String): DeviceSyncPayload? {
+    return deviceCache[email]
   }
 }
-

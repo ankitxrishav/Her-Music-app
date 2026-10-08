@@ -248,7 +248,7 @@ fun Queue(
   val selectedSongs = remember { mutableStateListOf<MediaMetadata>() }
   val selectedItems = remember { mutableStateListOf<Timeline.Window>() }
 
-  val castHandler =
+  val castHandler: com.fenrir.her.playback.CastConnectionHandler? =
     remember(playerConnection) {
       try {
         playerConnection.service.castConnectionHandler

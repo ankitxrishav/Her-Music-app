@@ -206,7 +206,7 @@ fun StorageSettings(
   LaunchedEffect(maxSongCacheSize) {
     if (maxSongCacheSize == 0) {
       coroutineScope.launch(Dispatchers.IO) {
-        playerCache.keys.forEach { key -> playerCache.removeResource(key) }
+        playerCache.keys.forEach { key: String -> playerCache.removeResource(key) }
       }
     }
   }
@@ -252,7 +252,7 @@ fun StorageSettings(
       onDismiss = { clearCacheDialog = false },
       onConfirm = {
         coroutineScope.launch(Dispatchers.IO) {
-          playerCache.keys.forEach { key -> playerCache.removeResource(key) }
+          playerCache.keys.forEach { key: String -> playerCache.removeResource(key) }
         }
         clearCacheDialog = false
       },

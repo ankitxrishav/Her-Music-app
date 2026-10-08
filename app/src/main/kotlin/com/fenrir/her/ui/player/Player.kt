@@ -441,7 +441,7 @@ fun BottomSheetPlayer(
     listenTogetherManager?.guestPlaybackRestricted?.collectAsState(initial = false)
       ?: remember { mutableStateOf(false) }
 
-  val castHandler =
+  val castHandler: com.fenrir.her.playback.CastConnectionHandler? =
     remember(playerConnection) {
       try {
         playerConnection.service.castConnectionHandler

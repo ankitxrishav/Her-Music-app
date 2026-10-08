@@ -91,3 +91,19 @@ object CoupleSerialization {
     }
   }
 }
+
+@Serializable
+data class DeviceSyncPayload(
+  val deviceId: String = "",
+  val deviceName: String = "",
+  val platform: String = "",
+  val email: String = "",
+  val songId: String = "",
+  val title: String = "",
+  val artist: String = "",
+  val thumbnailUrl: String? = null,
+  val isPlaying: Boolean = false,
+  val positionMs: Long = 0L,
+  val durationMs: Long = 0L,
+  val timestamp: Long = 0L,
+)
