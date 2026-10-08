@@ -120,20 +120,17 @@ data class DailyAnswer(
   val dateKey: String = "",
   val himAnswer: String = "",
   val herAnswer: String = "",
-  val ankitAnswer: String = "",
-  val ritikaAnswer: String = "",
 ) {
   fun getMyAnswer(role: CoupleAuthGuard.CoupleRole): String =
-    if (role == CoupleAuthGuard.CoupleRole.HER) herAnswer.ifBlank { ritikaAnswer }
-    else himAnswer.ifBlank { ankitAnswer }
+    if (role == CoupleAuthGuard.CoupleRole.HER) herAnswer
+    else himAnswer
 
   fun getPartnerAnswer(role: CoupleAuthGuard.CoupleRole): String =
-    if (role == CoupleAuthGuard.CoupleRole.HER) himAnswer.ifBlank { ankitAnswer }
-    else herAnswer.ifBlank { ritikaAnswer }
+    if (role == CoupleAuthGuard.CoupleRole.HER) himAnswer
+    else herAnswer
 
   val isBothAnswered: Boolean
-    get() = (himAnswer.isNotBlank() || ankitAnswer.isNotBlank()) &&
-            (herAnswer.isNotBlank() || ritikaAnswer.isNotBlank())
+    get() = himAnswer.isNotBlank() && herAnswer.isNotBlank()
 }
 
 private val CoupleLoveNotesKey = stringPreferencesKey("couple_love_notes_json")
@@ -197,7 +194,7 @@ fun CoupleSpaceScreen(
   var dailyAnswersJson by rememberPreference(CoupleDailyAnswersKey, "{}")
 
   val role = remember(accountEmail, coupleRolePref) {
-    if (coupleRolePref == "HER" || coupleRolePref == "RITIKA") CoupleAuthGuard.CoupleRole.HER
+    if (coupleRolePref == "HER") CoupleAuthGuard.CoupleRole.HER
     else CoupleAuthGuard.CoupleRole.HIM
   }
   val myName = CoupleAuthGuard.getMyName(role, customMyName.ifBlank { accountName })
@@ -334,8 +331,8 @@ fun CoupleSpaceScreen(
         if (remoteAnswers != null) {
           val (him, her) = remoteAnswers
           val cur = allAnswers[todayKey] ?: DailyAnswer(dateKey = todayKey)
-          val newHim = if (him.isNotBlank()) him else cur.himAnswer.ifBlank { cur.ankitAnswer }
-          val newHer = if (her.isNotBlank()) her else cur.herAnswer.ifBlank { cur.ritikaAnswer }
+          val newHim = if (him.isNotBlank()) him else cur.himAnswer
+          val newHer = if (her.isNotBlank()) her else cur.herAnswer
           if (newHim != cur.himAnswer || newHer != cur.herAnswer) {
             val updated = cur.copy(himAnswer = newHim, herAnswer = newHer)
             val updatedMap = allAnswers + (todayKey to updated)
@@ -976,9 +973,9 @@ fun CoupleSpaceScreen(
                           if (answerInput.isNotBlank()) {
                             isSubmittingAnswer = true
                             val updatedToday = if (role == CoupleAuthGuard.CoupleRole.HER) {
-                              todayAnswer.copy(herAnswer = answerInput.trim(), ritikaAnswer = answerInput.trim())
+                              todayAnswer.copy(herAnswer = answerInput.trim())
                             } else {
-                              todayAnswer.copy(himAnswer = answerInput.trim(), ankitAnswer = answerInput.trim())
+                              todayAnswer.copy(himAnswer = answerInput.trim())
                             }
                             val updatedMap = allAnswers + (todayKey to updatedToday)
                             dailyAnswersJson = Json.encodeToString(updatedMap)

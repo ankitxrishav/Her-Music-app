@@ -70,7 +70,7 @@ fun CoupleSharedSongsView(
   var sharedSongsJson by rememberPreference(CoupleSharedSongsKey, "[]")
 
   val role = remember(accountEmail, coupleRolePref) {
-    if (coupleRolePref == "HER" || coupleRolePref == "RITIKA") CoupleAuthGuard.CoupleRole.HER
+    if (coupleRolePref == "HER") CoupleAuthGuard.CoupleRole.HER
     else CoupleAuthGuard.CoupleRole.HIM
   }
   val myName = CoupleAuthGuard.getMyName(role, customMyName)

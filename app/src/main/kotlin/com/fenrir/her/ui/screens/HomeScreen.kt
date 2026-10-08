@@ -1948,7 +1948,7 @@ fun CoupleHomeHeroCard(
   val (linkedTimestamp) = rememberPreference(com.fenrir.her.constants.CoupleLinkedTimestampKey, 0L)
 
   val role = remember(accountEmail, coupleRolePref) {
-    if (coupleRolePref == "HER" || coupleRolePref == "RITIKA") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
+    if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
     else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
   }
   val myName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(role, customMyName)

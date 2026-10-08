@@ -1467,7 +1467,7 @@ private fun CoupleSyncCard(
   val (customFirebaseUrl) = rememberPreference(com.fenrir.her.constants.CoupleFirebaseUrlKey, "")
 
   val role = remember(myEmail, coupleRolePref) {
-    if (coupleRolePref == "HER" || coupleRolePref == "RITIKA") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
+    if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
     else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
   }
   val myName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(role, customMyName.ifBlank { savedUsername })

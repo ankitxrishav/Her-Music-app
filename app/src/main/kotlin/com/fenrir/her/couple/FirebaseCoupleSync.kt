@@ -452,7 +452,7 @@ object FirebaseCoupleSync {
   suspend fun submitDailyAnswer(spaceId: String, dateKey: String, role: String, answer: String, customUrl: String? = null): Boolean = withContext(Dispatchers.IO) {
     if (spaceId.isBlank() || dateKey.isBlank()) return@withContext false
     try {
-      val isHer = role.equals("HER", ignoreCase = true) || role.equals("RITIKA", ignoreCase = true)
+      val isHer = role.equals("HER", ignoreCase = true)
       val payload = """{"role":"${if (isHer) "HER" else "HIM"}","answer":${jsonParser.encodeToString(answer)},"timestamp":${System.currentTimeMillis()}}"""
       publishRelay("spc_${spaceId}_daily_$dateKey", payload)
 
@@ -485,8 +485,8 @@ object FirebaseCoupleSync {
             if (!body.isNullOrBlank() && body != "null") {
               val element = jsonParser.parseToJsonElement(body)
               if (element is JsonObject) {
-                him = element["himAnswer"]?.jsonPrimitive?.content ?: element["ankitAnswer"]?.jsonPrimitive?.content ?: ""
-                her = element["herAnswer"]?.jsonPrimitive?.content ?: element["ritikaAnswer"]?.jsonPrimitive?.content ?: ""
+                him = element["himAnswer"]?.jsonPrimitive?.content ?: ""
+                her = element["herAnswer"]?.jsonPrimitive?.content ?: ""
               }
             }
           }
@@ -500,7 +500,7 @@ object FirebaseCoupleSync {
           if (elem is JsonObject) {
             val r = elem["role"]?.jsonPrimitive?.content.orEmpty()
             val ans = elem["answer"]?.jsonPrimitive?.content.orEmpty()
-            if (r.equals("HER", ignoreCase = true) || r.equals("RITIKA", ignoreCase = true)) {
+            if (r.equals("HER", ignoreCase = true)) {
               if (ans.isNotBlank()) her = ans
             } else {
               if (ans.isNotBlank()) him = ans

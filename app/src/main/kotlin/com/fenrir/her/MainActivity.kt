@@ -935,7 +935,7 @@ class MainActivity : ComponentActivity() {
         val (customCoupleFirebaseUrl) = rememberPreference(CoupleFirebaseUrlKey, "")
         val (coupleAccountEmail) = rememberPreference(AccountEmailKey, "")
         val coupleRole = remember(coupleAccountEmail, coupleRolePref) {
-          if (coupleRolePref == "HER" || coupleRolePref == "RITIKA") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
+          if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER
           else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
         }
         val coupleMyName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(coupleRole, customCoupleMyName)
