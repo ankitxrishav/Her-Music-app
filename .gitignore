@@ -35,3 +35,9 @@ lastfm-empty/build/
 # Logs
 *.log
 .vscode/
+
+# Dumps and artifacts
+app/reply_next.json
+app/server.json
+app/yt_video_next.json
+package/*.apk

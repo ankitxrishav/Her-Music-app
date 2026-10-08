@@ -1,6 +1,9 @@
 package com.fenrir.her.couple
 
 import android.content.Context
+import androidx.datastore.preferences.core.edit
+import com.fenrir.her.utils.dataStore
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -78,6 +81,9 @@ object FirebaseCoupleSync {
 
   private val _deviceSyncFlow = MutableStateFlow<DeviceSyncPayload?>(null)
   val deviceSyncFlow: StateFlow<DeviceSyncPayload?> = _deviceSyncFlow.asStateFlow()
+
+  private val _radioFlow = MutableStateFlow<RadioBroadcastSession?>(null)
+  val radioFlow: StateFlow<RadioBroadcastSession?> = _radioFlow.asStateFlow()
 
   fun init(context: Context) {
     appContext = context.applicationContext
@@ -220,6 +226,17 @@ object FirebaseCoupleSync {
           val radio = RadioBroadcastSerialization.parse(payload)
           val spaceId = topic.split("/")[2]
           radioCache[spaceId] = radio
+          _radioFlow.value = radio
+          appContext?.let { ctx ->
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+              ctx.dataStore.edit { prefs ->
+                prefs[com.fenrir.her.constants.CoupleRadioBroadcastKey] = payload
+                if (radio.lastHeartEpochMs > 0L) {
+                  prefs[com.fenrir.her.constants.CoupleHeartBurstEpochKey] = radio.lastHeartEpochMs
+                }
+              }
+            }
+          }
         }
         topic.startsWith("her_music/invite/") -> {
           val inv = jsonParser.decodeFromString<CoupleInvite>(payload)

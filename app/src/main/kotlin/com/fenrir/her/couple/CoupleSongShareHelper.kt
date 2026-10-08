@@ -8,10 +8,17 @@ import com.fenrir.her.auth.CoupleAuthGuard
 import com.fenrir.her.constants.AccountEmailKey
 import com.fenrir.her.constants.ActiveCoupleProfileKey
 import com.fenrir.her.constants.CoupleChatMessagesKey
+import com.fenrir.her.constants.CoupleMyNameKey
+import com.fenrir.her.constants.CouplePartnerNameKey
 import com.fenrir.her.constants.CoupleSharedSongsKey
+import com.fenrir.her.constants.CoupleSpaceIdKey
 import com.fenrir.her.models.MediaMetadata
 import com.fenrir.her.utils.dataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import java.util.UUID
 
 object CoupleSongShareHelper {
   suspend fun shareSong(
@@ -20,15 +27,17 @@ object CoupleSongShareHelper {
     title: String,
     artist: String,
     thumbnailUrl: String?,
-    formatBadge: String? = "HI-RES",
+    formatBadge: String? = null,
     note: String? = null
   ) {
     val prefs = context.dataStore.data.first()
     val email = prefs[AccountEmailKey].orEmpty()
     val profile = prefs[ActiveCoupleProfileKey].orEmpty()
+    val spaceId = prefs[CoupleSpaceIdKey].orEmpty()
     val role = CoupleAuthGuard.resolveRole(email, profile)
-    val sender = CoupleAuthGuard.getMyName(role)
-    val receiver = CoupleAuthGuard.getPartnerName(role)
+    val defaultSender = CoupleAuthGuard.getMyName(role)
+    val sender = prefs[CoupleMyNameKey]?.takeIf { it.isNotBlank() } ?: defaultSender
+    val receiver = prefs[CouplePartnerNameKey]?.takeIf { it.isNotBlank() } ?: CoupleAuthGuard.getPartnerName(role)
 
     val attachment = SharedSongAttachment(
       id = songId,
@@ -55,6 +64,23 @@ object CoupleSongShareHelper {
       currentSongs.removeAll { it.id == songId }
       currentSongs.add(0, attachment)
       editPrefs[CoupleSharedSongsKey] = CoupleSerialization.serializeSharedSongs(currentSongs)
+    }
+
+    if (spaceId.isNotBlank()) {
+      CoroutineScope(Dispatchers.IO).launch {
+        FirebaseCoupleSync.sendChatMessage(spaceId, message)
+        val push = CouplePushSong(
+          id = UUID.randomUUID().toString(),
+          songId = songId,
+          title = title,
+          artist = artist,
+          thumbnailUrl = thumbnailUrl,
+          senderRole = role.name,
+          senderName = sender,
+          message = note ?: "Shared a song for you: $title"
+        )
+        FirebaseCoupleSync.pushSong(spaceId, push)
+      }
     }
 
     Toast.makeText(context, "Sent \"$title\" to $receiver with love ❤️", Toast.LENGTH_SHORT).show()

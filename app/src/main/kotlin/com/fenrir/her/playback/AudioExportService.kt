@@ -40,6 +40,7 @@ import timber.log.Timber
 class AudioExportService : Service() {
   private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val httpClient = OkHttpClient()
+  private val activeExports = java.util.concurrent.atomic.AtomicInteger(0)
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val songId = intent?.getStringExtra(EXTRA_SONG_ID) ?: return START_NOT_STICKY
@@ -50,6 +51,7 @@ class AudioExportService : Service() {
     val targetDirectoryUri =
       intent.getStringExtra(EXTRA_TARGET_DIRECTORY_URI) ?: return START_NOT_STICKY
 
+    activeExports.incrementAndGet()
     serviceScope.launch {
       exportSong(
         songId = songId,
@@ -134,7 +136,9 @@ class AudioExportService : Service() {
       tempOutputFile.delete()
       clearExportProgress(songId)
       removeExportingSongId(songId)
-      stopSelf()
+      if (activeExports.decrementAndGet() <= 0) {
+        stopSelf()
+      }
     }
   }
 
@@ -143,55 +147,93 @@ class AudioExportService : Service() {
       Regex("(19|20)\\d{2}").find(it)?.value?.toIntOrNull()
     }
 
+  private fun probeContentLength(url: String, headers: Map<String, String>?): Long? {
+    android.net.Uri.parse(url).getQueryParameter("clen")?.toLongOrNull()?.let { if (it > 0) return it }
+    val reqBuilder = Request.Builder().url(url).header("Range", "bytes=0-0")
+    headers?.forEach { (k, v) -> reqBuilder.header(k, v) }
+    return runCatching {
+      httpClient.newCall(reqBuilder.build()).execute().use { r ->
+        if (!r.isSuccessful && r.code != 206) return null
+        r.header("Content-Range")?.substringAfter("/")?.toLongOrNull()
+          ?: r.header("Content-Length")?.toLongOrNull()
+      }
+    }.getOrNull()
+  }
+
   private suspend fun downloadStream(
     playbackData: com.fenrir.her.utils.YTPlayerUtils.PlaybackData,
     destFile: File,
     onProgress: suspend (Int) -> Unit = {},
   ) = withContext(Dispatchers.IO) {
-    val totalLength = playbackData.format.contentLength?.takeIf { it > 0 } ?: 10_000_000L
     val streamUrl = playbackData.streamUrl
+    val probedLength = playbackData.format.contentLength?.takeIf { it > 0 }
+      ?: probeContentLength(streamUrl, playbackData.headers)
 
-    destFile.createNewFile()
-    val raf = RandomAccessFile(destFile, "rw")
-    raf.setLength(totalLength)
-    raf.close()
+    suspend fun singleStreamDownload() {
+      val reqBuilder = Request.Builder().url(streamUrl)
+      playbackData.headers?.forEach { (k, v) -> reqBuilder.header(k, v) }
+      httpClient.newCall(reqBuilder.build()).execute().use { response ->
+        if (!response.isSuccessful) error("Download stream failed: HTTP ${response.code}")
+        val body = response.body ?: error("No response body")
+        destFile.outputStream().use { out ->
+          body.byteStream().copyTo(out)
+        }
+      }
+      onProgress(100)
+    }
 
-    val partSize = totalLength / PARALLEL_PARTS
-    val written = java.util.concurrent.atomic.AtomicLong(0L)
+    if (probedLength == null || probedLength <= 0) {
+      singleStreamDownload()
+      return@withContext
+    }
 
-    val parts = (0 until PARALLEL_PARTS).map { partIndex ->
-      async {
-        val start = partIndex * partSize
-        val end = if (partIndex == PARALLEL_PARTS - 1) totalLength - 1 else start + partSize - 1
-        val rangedUrl = "$streamUrl&range=$start-$end"
-        val request = Request.Builder().url(rangedUrl)
-          .header("Range", "bytes=$start-$end")
-          .build()
-        httpClient.newCall(request).execute().use { response ->
-          if (!response.isSuccessful && response.code != 206) {
-            error("Part $partIndex failed: HTTP ${response.code}")
-          }
-          val body = response.body ?: error("No body for part $partIndex")
-          val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-          var offset = start
-          RandomAccessFile(destFile, "rw").use { out ->
-            body.byteStream().use { input ->
-              var read: Int
-              while (input.read(buffer).also { read = it } != -1) {
-                out.seek(offset)
-                out.write(buffer, 0, read)
-                offset += read
-                val totalWritten = written.addAndGet(read.toLong())
-                val percent = ((totalWritten * 100) / totalLength).toInt().coerceIn(0, 99)
-                onProgress(percent)
+    try {
+      val totalLength = probedLength
+      destFile.createNewFile()
+      val raf = RandomAccessFile(destFile, "rw")
+      raf.setLength(totalLength)
+      raf.close()
+
+      val partSize = totalLength / PARALLEL_PARTS
+      val written = java.util.concurrent.atomic.AtomicLong(0L)
+
+      val parts = (0 until PARALLEL_PARTS).map { partIndex ->
+        async {
+          val start = partIndex * partSize
+          val end = if (partIndex == PARALLEL_PARTS - 1) totalLength - 1 else start + partSize - 1
+          val rangedUrl = "$streamUrl&range=$start-$end"
+          val requestBuilder = Request.Builder().url(rangedUrl)
+            .header("Range", "bytes=$start-$end")
+          playbackData.headers?.forEach { (k, v) -> requestBuilder.header(k, v) }
+          val request = requestBuilder.build()
+          httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful && response.code != 206) {
+              error("Part $partIndex failed: HTTP ${response.code}")
+            }
+            val body = response.body ?: error("No body for part $partIndex")
+            val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+            var offset = start
+            RandomAccessFile(destFile, "rw").use { out ->
+              body.byteStream().use { input ->
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                  out.seek(offset)
+                  out.write(buffer, 0, read)
+                  offset += read
+                  val totalWritten = written.addAndGet(read.toLong())
+                  val percent = ((totalWritten * 100) / totalLength).toInt().coerceIn(0, 99)
+                  onProgress(percent)
+                }
               }
             }
           }
         }
       }
+      parts.awaitAll()
+      onProgress(100)
+    } catch (_: Exception) {
+      singleStreamDownload()
     }
-    parts.awaitAll()
-    onProgress(100)
   }
 
   private fun downloadArtwork(artworkUrl: String, destFile: File): Boolean {

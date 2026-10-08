@@ -72,7 +72,7 @@ constructor(
       com.fenrir.her.constants.DownloadQuality.YOUTUBE
     )
   private val ipVersion by enumPreference(context, IpVersionKey, IpVersion.AUTO)
-  private val songUrlCache = HashMap<String, Pair<String, Long>>()
+  private val songUrlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -123,11 +123,19 @@ constructor(
           return@Factory dataSpec.withUri(it.first.toUri())
         }
 
+      val targetAudioQuality = when (downloadQuality) {
+        com.fenrir.her.constants.DownloadQuality.LOSSLESS_FLAC,
+        com.fenrir.her.constants.DownloadQuality.HIGH_AAC -> com.fenrir.her.constants.AudioQuality.HIGH
+        com.fenrir.her.constants.DownloadQuality.OPUS -> com.fenrir.her.constants.AudioQuality.OPUS
+        com.fenrir.her.constants.DownloadQuality.MP3_320 -> com.fenrir.her.constants.AudioQuality.HIGH
+        com.fenrir.her.constants.DownloadQuality.YOUTUBE -> com.fenrir.her.constants.AudioQuality.AUTO
+      }
+
       val playbackData =
         runBlocking(Dispatchers.IO) {
             YTPlayerUtils.playerResponseForPlayback(
               videoId = mediaId,
-              audioQuality = com.fenrir.her.constants.AudioQuality.OPUS,
+              audioQuality = targetAudioQuality,
               connectivityManager = connectivityManager
             )
           }
@@ -199,8 +207,8 @@ constructor(
 
       val streamUrl = playbackData.streamUrl
 
-      songUrlCache["${mediaId}_${downloadQuality.name}"] =
-        streamUrl to playbackData.streamExpiresInSeconds * 1000L
+      val expiresAt = System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L) - 60_000L
+      songUrlCache["${mediaId}_${downloadQuality.name}"] = streamUrl to expiresAt
       dataSpec.withUri(streamUrl.toUri())
     }
 

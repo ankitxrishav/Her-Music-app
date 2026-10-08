@@ -11,7 +11,7 @@ data class SharedSongAttachment(
   val title: String,
   val artist: String,
   val thumbnailUrl: String? = null,
-  val formatBadge: String? = "HI-RES",
+  val formatBadge: String? = null,
   val addedBy: String = "",
   val note: String? = null,
   val timestamp: Long = System.currentTimeMillis()

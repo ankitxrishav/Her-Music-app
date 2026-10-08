@@ -248,6 +248,10 @@ object YTPlayerUtils {
           requireM4a = requireM4a
       ) ?: throw Exception("No stream found via InnerTubeXResolver")
       
+      val clen = android.net.Uri.parse(extracted.url).getQueryParameter("clen")?.toLongOrNull()
+      val expire = android.net.Uri.parse(extracted.url).getQueryParameter("expire")?.toLongOrNull()
+      val expiresInSeconds = expire?.let { (it - System.currentTimeMillis() / 1000).toInt().coerceAtLeast(300) } ?: 21600
+
       PlaybackData(
           audioConfig = com.music.innertube.models.response.PlayerResponse.PlayerConfig.AudioConfig(
               loudnessDb = extracted.loudnessDb,
@@ -262,7 +266,7 @@ object YTPlayerUtils {
               bitrate = extracted.kbps * 1000,
               width = null,
               height = null,
-              contentLength = null,
+              contentLength = clen,
               quality = "high",
               fps = null,
               qualityLabel = null,
@@ -278,7 +282,7 @@ object YTPlayerUtils {
               audioTrack = null
           ),
           streamUrl = extracted.url,
-          streamExpiresInSeconds = 21600,
+          streamExpiresInSeconds = expiresInSeconds,
           headers = extracted.headers
       )
     }

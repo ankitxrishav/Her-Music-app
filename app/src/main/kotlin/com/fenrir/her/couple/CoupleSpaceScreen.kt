@@ -275,6 +275,20 @@ fun CoupleSpaceScreen(
     }
   }
 
+  LaunchedEffect(spaceId) {
+    if (spaceId.isNotBlank()) {
+      FirebaseCoupleSync.subscribe("her_music/space/${spaceId.trim()}/radio")
+      FirebaseCoupleSync.radioFlow.collect { remoteRadio ->
+        if (remoteRadio != null) {
+          broadcastJson = RadioBroadcastSerialization.serialize(remoteRadio)
+          if (remoteRadio.lastHeartEpochMs > 0L) {
+            heartBurstEpochMs = remoteRadio.lastHeartEpochMs
+          }
+        }
+      }
+    }
+  }
+
   LaunchedEffect(isPaired, spaceId, role, myName, playerConnection) {
     if (isPaired && spaceId.isNotBlank()) {
       CouplePlaybackSyncManager.startBroadcaster(
@@ -288,7 +302,11 @@ fun CoupleSpaceScreen(
     }
   }
 
-  val todayKey = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date()) }
+  val todayKey = remember {
+    SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+      timeZone = java.util.TimeZone.getTimeZone("UTC")
+    }.format(Date())
+  }
   val dayOfYear = remember {
     val cal = java.util.Calendar.getInstance()
     cal.get(java.util.Calendar.DAY_OF_YEAR)
@@ -643,12 +661,19 @@ fun CoupleSpaceScreen(
                       playerConnection?.playQueue(YouTubeQueue(WatchEndpoint(videoId = broadcastSession.songId)))
                     },
                     onStopBroadcast = {
-                      broadcastJson = RadioBroadcastSerialization.serialize(RadioBroadcastSession())
+                      val empty = RadioBroadcastSession()
+                      broadcastJson = RadioBroadcastSerialization.serialize(empty)
+                      coroutineScope.launch {
+                        FirebaseCoupleSync.broadcastRadio(spaceId, empty, customFirebaseUrl)
+                      }
                     },
                     onSendHeart = {
                       val updated = broadcastSession.copy(heartCount = broadcastSession.heartCount + 1, lastHeartEpochMs = System.currentTimeMillis())
                       broadcastJson = RadioBroadcastSerialization.serialize(updated)
                       heartBurstEpochMs = System.currentTimeMillis()
+                      coroutineScope.launch {
+                        FirebaseCoupleSync.broadcastRadio(spaceId, updated, customFirebaseUrl)
+                      }
                     }
                   )
                 }
