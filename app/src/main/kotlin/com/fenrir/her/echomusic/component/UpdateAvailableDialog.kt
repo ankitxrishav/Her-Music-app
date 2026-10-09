@@ -197,7 +197,7 @@ fun UpdateAvailableDialog(
             onClick = {
               onDismiss()
               val intent =
-                Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://echomusic.fun"))
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/ankitxrishav/Her-Music-app/releases/latest/download/Her-Music-arm64-v8a.apk"))
               context.startActivity(intent)
             },
             shape = actionShape,
