@@ -1650,6 +1650,11 @@ class MainActivity : ComponentActivity() {
   }
 
   private fun handleDeepLinkIntent(intent: Intent, navController: NavHostController) {
+    if (intent.action == "com.fenrir.her.action.UPDATE") {
+      intent.action = null
+      navController.navigate("update")
+      return
+    }
     var uri = intent.data
     if (uri == null) {
       val extraText = intent.extras?.getString(Intent.EXTRA_TEXT)
