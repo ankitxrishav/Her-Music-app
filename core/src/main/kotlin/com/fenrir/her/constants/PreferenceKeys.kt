@@ -51,7 +51,7 @@ val SliderStyleKey = stringPreferencesKey("sliderStyle")
 val SquigglySliderKey = booleanPreferencesKey("squigglySlider")
 val SwipeToSongKey = booleanPreferencesKey("SwipeToSong")
 val SwipeToRemoveSongKey = booleanPreferencesKey("SwipeToRemoveSong")
-val UseNewPlayerDesignKey = booleanPreferencesKey("useNewPlayerDesign")
+val UseNewPlayerDesignKey = booleanPreferencesKey("useNeoGroovePlayerDesign_v15")
 val UseNewMiniPlayerDesignKey = booleanPreferencesKey("useNewMiniPlayerDesign")
 val ShowCodecOnPlayerKey = booleanPreferencesKey("showCodecOnPlayer")
 val HidePlayerSliderKey = booleanPreferencesKey("hidePlayerSlider")
@@ -126,6 +126,11 @@ val CoupleLinkedTimestampKey = longPreferencesKey("couple_linked_timestamp")
 val CoupleFirebaseUrlKey = stringPreferencesKey("couple_firebase_url")
 val CoupleLiveSyncEnabledKey = booleanPreferencesKey("couple_live_sync_enabled")
 val CoupleLivePlaybackKey = stringPreferencesKey("couple_live_playback_json")
+val CoupleMyMoodEmojiKey = stringPreferencesKey("couple_my_mood_emoji")
+val CoupleMyMoodTextKey = stringPreferencesKey("couple_my_mood_text")
+val CouplePartnerMoodEmojiKey = stringPreferencesKey("couple_partner_mood_emoji")
+val CouplePartnerMoodTextKey = stringPreferencesKey("couple_partner_mood_text")
+val CouplePartnerMoodTimestampKey = longPreferencesKey("couple_partner_mood_timestamp")
 
 
 enum class AudioQuality {
@@ -860,3 +865,9 @@ enum class AppFont(val value: String) {
 
 val SelectedFontKey = stringPreferencesKey("selected_app_font")
 val CustomFontPathKey = androidx.datastore.preferences.core.stringPreferencesKey("custom_font_path")
+
+val ShowTogetherPillKey = booleanPreferencesKey("show_together_pill_key")
+val EnableVinylSpinKey = booleanPreferencesKey("enable_vinyl_spin_key")
+val PlayerHapticFeedbackKey = booleanPreferencesKey("player_haptic_feedback_key")
+val ShowPlayerQualityBadgeKey = booleanPreferencesKey("show_player_quality_badge_key")
+val PlayerArtworkShapeKey = stringPreferencesKey("player_artwork_shape_key")

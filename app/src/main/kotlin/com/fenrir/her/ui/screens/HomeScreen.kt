@@ -584,6 +584,7 @@ fun HomeScreen(
 
   val isPlaying by playerConnection.isEffectivelyPlaying.collectAsState()
   val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
+  val downloadedSongs by database.downloadedSongsByCreateDateAsc().collectAsState(initial = emptyList())
 
   val quickPicks by viewModel.quickPicks.collectAsState()
   val aiRecommendedPlaylist by viewModel.aiRecommendedPlaylist.collectAsState()
@@ -937,14 +938,83 @@ fun HomeScreen(
       val (coupleRolePref) = rememberPreference(CoupleRoleKey, "HIM")
       val (activeProfile) = rememberPreference(ActiveCoupleProfileKey, coupleRolePref)
       val (accountEmail) = rememberPreference(AccountEmailKey, "")
+      val (accountName) = rememberPreference(com.fenrir.her.constants.AccountNameKey, "")
+      val (customMyName) = rememberPreference(com.fenrir.her.constants.CoupleMyNameKey, "")
+      val (customPartnerName) = rememberPreference(com.fenrir.her.constants.CouplePartnerNameKey, "")
+      val (isPaired) = rememberPreference(com.fenrir.her.constants.CoupleIsPairedKey, false)
+      val (spaceId) = rememberPreference(com.fenrir.her.constants.CoupleSpaceIdKey, "")
+      var myMoodEmoji by rememberPreference(com.fenrir.her.constants.CoupleMyMoodEmojiKey, "✨")
+      var myMoodText by rememberPreference(com.fenrir.her.constants.CoupleMyMoodTextKey, "")
+      val (partnerMoodEmoji) = rememberPreference(com.fenrir.her.constants.CouplePartnerMoodEmojiKey, "💕")
+      val (partnerMoodText) = rememberPreference(com.fenrir.her.constants.CouplePartnerMoodTextKey, "")
+
       val role = remember(accountEmail, activeProfile) { CoupleAuthGuard.resolveRole(accountEmail, activeProfile) }
+      val myName = CoupleAuthGuard.getMyName(role, customMyName.ifBlank { accountName })
+      val partnerName = CoupleAuthGuard.getPartnerName(role, customPartnerName)
       val isMeBroadcasting = broadcastSession.isBroadcasting && broadcastSession.broadcasterRole == role.name
 
-      FrostAndEmberBackdrop(isPartnerActive = frostEmberState.isPartnerActive) {
-        LazyColumn(
-          state = lazylistState,
-          contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues()
-        ) {
+      var showMoodPickerSheet by remember { mutableStateOf(false) }
+
+      LaunchedEffect(isPaired, spaceId) {
+        if (isPaired && spaceId.isNotBlank()) {
+          com.fenrir.her.couple.FirebaseCoupleSync.subscribeSpace(spaceId)
+        }
+      }
+
+      if (showMoodPickerSheet) {
+        com.fenrir.her.ui.component.CoupleMoodPickerSheet(
+          currentEmoji = myMoodEmoji,
+          currentText = myMoodText,
+          partnerName = partnerName.takeIf { isPaired },
+          onDismiss = { showMoodPickerSheet = false },
+          onSaveMood = { emoji, text ->
+            myMoodEmoji = emoji
+            myMoodText = text
+            if (isPaired && spaceId.isNotBlank()) {
+              scope.launch {
+                com.fenrir.her.couple.FirebaseCoupleSync.broadcastMood(
+                  spaceId = spaceId,
+                  mood = com.fenrir.her.couple.CoupleMood(
+                    senderRole = role.name,
+                    senderName = myName,
+                    emoji = emoji,
+                    moodText = text,
+                    timestamp = System.currentTimeMillis()
+                  )
+                )
+              }
+            }
+          }
+        )
+      }
+
+      val isDarkTheme = isSystemInDarkTheme()
+      val homeBgColor = if (isDarkTheme) Color(0xFF181610) else Color(0xFFFDBE3B)
+
+      LazyColumn(
+        state = lazylistState,
+        contentPadding = LocalPlayerAwareWindowInsets.current.asPaddingValues(),
+        modifier = Modifier
+          .fillMaxSize()
+          .background(homeBgColor)
+      ) {
+          item(key = "neo_home_header") {
+            com.fenrir.her.ui.component.NeoHomeHeader(
+              avatarUrl = url,
+              userName = myName,
+              partnerName = partnerName.takeIf { isPaired },
+              myMoodEmoji = myMoodEmoji,
+              myMoodText = myMoodText,
+              partnerMoodEmoji = partnerMoodEmoji,
+              partnerMoodText = partnerMoodText,
+              isPaired = isPaired,
+              onMoodClick = { showMoodPickerSheet = true },
+              onSearchClick = { navController.navigate(Screens.Search.route) },
+              onFavoriteClick = { navController.navigate("library") },
+              onAvatarClick = { navController.navigate("couple_space") },
+            )
+          }
+
           if (frostEmberState.isPartnerActive) {
             item(key = "frost_ember_banner") {
               FrostAndEmberWhisperBanner(
@@ -976,6 +1046,36 @@ fun HomeScreen(
             CoupleHomeHeroCard(
               onOpenCoupleSpace = { navController.navigate("couple_space") },
               onSyncTogether = { navController.navigate("couple_space") },
+            )
+          }
+
+          item(key = "home_downloaded_section") {
+            com.fenrir.her.ui.component.NeoDownloadedSection(
+              downloadedSongs = downloadedSongs,
+              onSongClick = { index ->
+                playerConnection.playQueue(
+                  com.fenrir.her.playback.queues.ListQueue(
+                    title = "Offline Music",
+                    items = downloadedSongs.map { it.toMediaItem() },
+                    startIndex = index
+                  )
+                )
+              },
+              onViewAllClick = { navController.navigate(Screens.Downloads.route) },
+              onPlayAllClick = {
+                if (downloadedSongs.isNotEmpty()) {
+                  playerConnection.playQueue(
+                    com.fenrir.her.playback.queues.ListQueue(
+                      title = "Offline Music",
+                      items = downloadedSongs.map { it.toMediaItem() },
+                      startIndex = 0
+                    )
+                  )
+                } else {
+                  navController.navigate(Screens.Downloads.route)
+                }
+              },
+              modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
             )
           }
 
@@ -1042,7 +1142,7 @@ fun HomeScreen(
                       )
 
                     Column(
-                      modifier = Modifier.fillMaxWidth().animateItem(),
+                      modifier = Modifier.fillMaxWidth(),
                     ) {
                       HorizontalPager(
                         state = pagerState,
@@ -1267,7 +1367,7 @@ fun HomeScreen(
                       maxItemWidth = heroWidth,
                       itemSpacing = 8.dp,
                       contentPadding = PaddingValues(horizontal = 16.dp),
-                      modifier = Modifier.fillMaxWidth().height(290.dp).animateItem()
+                      modifier = Modifier.fillMaxWidth().height(290.dp)
                     ) { index ->
                       val originalSong = distinctQuickPicks[index]
                       val song by
@@ -1589,7 +1689,7 @@ fun HomeScreen(
                           .asPaddingValues(),
                       flingBehavior =
                         rememberSnapFlingBehavior(forgottenFavoritesSnapLayoutInfoProvider),
-                      modifier = Modifier.fillMaxWidth().height(ListItemHeight * rows).animateItem()
+                      modifier = Modifier.fillMaxWidth().height(ListItemHeight * rows)
                     ) {
                       itemsIndexed(
                         items = forgottenFavorites.distinctBy { it.id },
@@ -1760,7 +1860,7 @@ fun HomeScreen(
                         WindowInsets.systemBars
                           .only(WindowInsetsSides.Horizontal)
                           .asPaddingValues(),
-                      modifier = Modifier.fillMaxWidth().height(ListItemHeight * 4).animateItem()
+                      modifier = Modifier.fillMaxWidth().height(ListItemHeight * 4)
                     ) {
                       itemsIndexed(
                         items = sectionSongs.distinctBy { it.id },
@@ -1849,7 +1949,7 @@ fun HomeScreen(
                     rows = GridCells.Fixed(4),
                     contentPadding = PaddingValues(6.dp),
                     modifier =
-                      Modifier.height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp).animateItem()
+                      Modifier.height((MoodAndGenresButtonHeight + 12.dp) * 4 + 12.dp)
                   ) {
                     items(moodAndGenres.distinctBy { it.title }, key = { it.title }) {
                       MoodAndGenresButton(
@@ -1873,7 +1973,7 @@ fun HomeScreen(
           isLoading || homePage?.continuation != null && homePage?.sections?.isNotEmpty() == true
         ) {
           item(key = "loading_shimmer") {
-            ShimmerHost(modifier = Modifier.animateItem()) {
+            ShimmerHost {
               // 1. Quick Picks Skeleton
               Row(
                 modifier =
@@ -1932,7 +2032,6 @@ fun HomeScreen(
     }
   }
 }
-}
 
 @Composable
 fun CoupleHomeHeroCard(
@@ -1959,182 +2058,134 @@ fun CoupleHomeHeroCard(
     } else 1L
   }
 
+  val isDark = isSystemInDarkTheme()
+  val cardBg = if (isDark) Color(0xFF26221A) else Color(0xFFFFFDF8)
+  val cardBorder = if (isDark) Color(0x22FFFFFF) else Color(0x18000000)
+  val titleColor = if (isDark) Color.White else Color(0xFF191712)
+  val subColor = if (isDark) Color.White.copy(alpha = 0.7f) else Color(0xFF555555)
+
   Card(
-    shape = RoundedCornerShape(24.dp),
-    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+    shape = RoundedCornerShape(26.dp),
+    colors = CardDefaults.cardColors(containerColor = cardBg),
+    border = BorderStroke(1.dp, cardBorder),
     modifier = Modifier
       .fillMaxWidth()
-      .padding(horizontal = 16.dp, vertical = 8.dp)
+      .padding(horizontal = 20.dp, vertical = 6.dp)
       .clickable(onClick = onOpenCoupleSpace),
   ) {
-    Box(
+    Column(
       modifier = Modifier
         .fillMaxWidth()
-        .background(
-          brush = Brush.linearGradient(
-            colors = listOf(
-              Color(0xFF280B32),
-              Color(0xFF4A154B),
-              Color(0xFF1E1035),
-            )
-          )
-        )
-        .padding(18.dp)
+        .padding(18.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-      Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = if (isPaired) "MADE FOR YOU & ${partnerName.uppercase()}" else "MADE FOR YOU & HER",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 1.2.sp
+          ),
+          color = Color(0xFFE11D48)
+        )
+
+        Surface(
+          shape = RoundedCornerShape(100),
+          color = if (isPaired) Color(0xFF10B981).copy(alpha = 0.15f) else Color(0xFFE11D48).copy(alpha = 0.12f)
         ) {
-          if (isPaired) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-              Box(
-                modifier = Modifier
-                  .size(42.dp)
-                  .clip(CircleShape)
-                  .background(Color(0xFFE91E63)),
-                contentAlignment = Alignment.Center,
-              ) {
-                Text(
-                  text = myName.take(1).uppercase(),
-                  color = Color.White,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 20.sp
-                )
-              }
-              Icon(
-                painter = painterResource(R.drawable.favorite),
-                contentDescription = null,
-                tint = Color(0xFFFF4081),
-                modifier = Modifier.size(20.dp),
-              )
-              Box(
-                modifier = Modifier
-                  .size(42.dp)
-                  .clip(CircleShape)
-                  .background(Color(0xFF9C27B0)),
-                contentAlignment = Alignment.Center,
-              ) {
-                Text(
-                  text = partnerName.take(1).uppercase(),
-                  color = Color.White,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 20.sp
-                )
-              }
-            }
-
-            Surface(
-              shape = RoundedCornerShape(12.dp),
-              color = Color(0x33FF4081),
-            ) {
-              Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF4CAF50))
-                )
-                Text(
-                  "Connected",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = Color.White,
-                  fontWeight = FontWeight.SemiBold,
-                )
-              }
-            }
-          } else {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-              Box(
-                modifier = Modifier
-                  .size(42.dp)
-                  .clip(CircleShape)
-                  .background(Color(0xFFFF4081)),
-                contentAlignment = Alignment.Center,
-              ) {
-                Icon(
-                  painter = painterResource(R.drawable.favorite),
-                  contentDescription = null,
-                  tint = Color.White,
-                  modifier = Modifier.size(22.dp)
-                )
-              }
-            }
-
-            Surface(
-              shape = RoundedCornerShape(12.dp),
-              color = Color(0x33FF4081),
-            ) {
-              Text(
-                "Tap to Pair",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-              )
-            }
-          }
-        }
-
-        Column {
-          Text(
-            text = if (isPaired) "$myName & $partnerName" else "Link Couple Space",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-          )
-          Text(
-            text = if (isPaired) "Day $daysTogether in love • Tap to open couple space" else "Sync music, push songs & listen together in real time 💕",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFFE0D0E8),
-          )
-        }
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          FilledTonalButton(
-            onClick = onSyncTogether,
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.filledTonalButtonColors(
-              containerColor = Color(0xFFFF4081),
-              contentColor = Color.White,
-            ),
-            modifier = Modifier.weight(1f).height(42.dp),
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
           ) {
-            Icon(
-              painter = painterResource(R.drawable.favorite),
-              contentDescription = null,
-              modifier = Modifier.size(16.dp),
+            Box(
+              modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(if (isPaired) Color(0xFF10B981) else Color(0xFFE11D48))
             )
-            Spacer(Modifier.width(6.dp))
-            Text(if (isPaired) "Listen with $partnerName" else "Pair Hearts 💕", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-          }
-
-          FilledTonalButton(
-            onClick = onOpenCoupleSpace,
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.filledTonalButtonColors(
-              containerColor = Color(0x33FFFFFF),
-              contentColor = Color.White,
-            ),
-            modifier = Modifier.height(42.dp),
-          ) {
-            Text("Couple Space", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(
+              text = if (isPaired) "Connected" else "Pair Hearts",
+              style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+              color = if (isPaired) Color(0xFF10B981) else Color(0xFFE11D48)
+            )
           }
         }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+      ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+          Text(
+            text = if (isPaired) "$myName & $partnerName Mix" else "Couple Mix",
+            style = MaterialTheme.typography.headlineMedium.copy(
+              fontWeight = FontWeight.ExtraBold,
+              fontSize = 24.sp,
+              letterSpacing = (-0.5).sp
+            ),
+            color = titleColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          Spacer(Modifier.height(4.dp))
+          Text(
+            text = if (isPaired) "A perfect blend of your both moods • Day $daysTogether" else "A perfect blend of your both moods",
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            color = subColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+
+        Box(
+          modifier = Modifier
+            .size(52.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF141416))
+            .clickable(onClick = onSyncTogether),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.play),
+            contentDescription = "Play Mix",
+            tint = Color.White,
+            modifier = Modifier.size(24.dp)
+          )
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Box(
+          modifier = Modifier
+            .size(width = 20.dp, height = 5.dp)
+            .clip(RoundedCornerShape(100))
+            .background(if (isDark) Color.White else Color(0xFF1A1A1A))
+        )
+        Spacer(Modifier.width(6.dp))
+        Box(
+          modifier = Modifier
+            .size(5.dp)
+            .clip(CircleShape)
+            .background(if (isDark) Color.White.copy(alpha = 0.3f) else Color(0x33000000))
+        )
+        Spacer(Modifier.width(6.dp))
+        Box(
+          modifier = Modifier
+            .size(5.dp)
+            .clip(CircleShape)
+            .background(if (isDark) Color.White.copy(alpha = 0.3f) else Color(0x33000000))
+        )
       }
     }
   }

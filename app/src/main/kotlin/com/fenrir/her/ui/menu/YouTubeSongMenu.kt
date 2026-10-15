@@ -114,7 +114,7 @@ fun YouTubeSongMenu(
     }
   }
 
-  val (enableExportAsMp3) = rememberPreference(key = EnableExportAsMp3Key, defaultValue = false)
+  val (enableExportAsMp3) = rememberPreference(key = EnableExportAsMp3Key, defaultValue = true)
   val (exportDirectoryUri) = rememberPreference(key = ExportDirectoryUriKey, defaultValue = "")
   val (exportingSongIds) = rememberPreference(key = ExportingSongIdsKey, defaultValue = "")
   val (exportedSongIds) = rememberPreference(key = ExportedSongIdsKey, defaultValue = "")
@@ -655,26 +655,22 @@ fun YouTubeSongMenu(
                       )
                     },
                     onClick = {
-                      if (exportDirectoryUri.isBlank()) {
-                        android.widget.Toast.makeText(
-                            context,
-                            context.getString(R.string.export_directory_not_set),
-                            android.widget.Toast.LENGTH_SHORT
-                          )
-                          .show()
-                        onDismiss()
-                      } else {
-                        onDismiss()
-                        com.fenrir.her.playback.AudioExportService.start(
-                          context = context,
-                          songId = song.id,
-                          songTitle = song.title,
-                          songArtist = artists.joinToString(", ") { it.name },
-                          songAlbum = song.album?.name ?: "",
-                          artworkUrl = song.thumbnail,
-                          targetDirectoryUri = exportDirectoryUri
-                        )
+                      val effectiveTarget = exportDirectoryUri.ifBlank {
+                        val defaultMusic = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC)
+                        val herDir = java.io.File(defaultMusic, "Her")
+                        if (!herDir.exists()) herDir.mkdirs()
+                        android.net.Uri.fromFile(herDir).toString()
                       }
+                      onDismiss()
+                      com.fenrir.her.playback.AudioExportService.start(
+                        context = context,
+                        songId = song.id,
+                        songTitle = song.title,
+                        songArtist = artists.joinToString(", ") { it.name },
+                        songAlbum = song.album?.name ?: "",
+                        artworkUrl = song.thumbnail,
+                        targetDirectoryUri = effectiveTarget
+                      )
                     }
                   )
               }

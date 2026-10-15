@@ -43,12 +43,13 @@ object CouplePlaybackSyncManager {
     playerConnection: PlayerConnection?,
     customUrl: String? = null
   ) {
+    stopLiveSyncFollow()
     stopBroadcaster()
     if (spaceId.isBlank()) return
 
     fun sendBroadcast() {
       if (_isLiveSyncing.value) return
-      scope.launch(Dispatchers.Main) {
+      managerScope.launch(Dispatchers.Main) {
         try {
           val player = playerConnection?.player ?: return@launch
           val meta = playerConnection.service.currentMediaMetadata.value ?: return@launch
@@ -95,32 +96,30 @@ object CouplePlaybackSyncManager {
       playerListener = listener
     }
 
-    broadcastJob = scope.launch(Dispatchers.Main) {
+    broadcastJob = managerScope.launch(Dispatchers.IO) {
       while (isActive) {
         try {
           if (!_isLiveSyncing.value) {
             val p = playerConnection?.player
             val m = playerConnection?.service?.currentMediaMetadata?.value
-            if (p != null && m != null) {
+            if (p != null && m != null && p.isPlaying) {
               val live = CoupleLivePlayback(
                 songId = m.id,
                 title = m.title,
                 artist = m.artists.joinToString { it.name },
                 thumbnailUrl = m.thumbnailUrl,
-                isPlaying = p.isPlaying,
+                isPlaying = true,
                 positionMs = p.currentPosition.coerceAtLeast(0L),
                 durationMs = p.duration.coerceAtLeast(0L),
                 timestampEpochMs = System.currentTimeMillis(),
                 senderRole = role.name,
                 senderName = myName
               )
-              withContext(Dispatchers.IO) {
-                FirebaseCoupleSync.broadcastLivePlayback(spaceId, live, customUrl)
-              }
+              FirebaseCoupleSync.broadcastLivePlayback(spaceId, live, customUrl)
             }
           }
         } catch (_: Exception) {}
-        delay(1200)
+        delay(2500)
       }
     }
   }
@@ -140,6 +139,7 @@ object CouplePlaybackSyncManager {
     playerConnection: PlayerConnection?,
     customUrl: String? = null
   ) {
+    stopBroadcaster()
     stopLiveSyncFollow()
     if (spaceId.isBlank()) return
 
@@ -152,58 +152,67 @@ object CouplePlaybackSyncManager {
     _isLiveSyncing.value = true
 
     syncJob = managerScope.launch {
+      launch {
+        FirebaseCoupleSync.liveFlow.collect { partnerLive ->
+          if (partnerLive != null && partnerLive.senderRole != myRole.name && partnerLive.songId.isNotBlank()) {
+            applyPartnerPlayback(partnerLive, playerConnection)
+          }
+        }
+      }
+
       while (isActive) {
         try {
           val partnerLive = withContext(Dispatchers.IO) {
             FirebaseCoupleSync.fetchPartnerLivePlayback(spaceId, partnerRole.name, customUrl)
           }
-
           if (partnerLive != null && partnerLive.senderRole != myRole.name && partnerLive.songId.isNotBlank()) {
-            _partnerPlayback.value = partnerLive
-
-            val player = playerConnection?.player
-            val currentMeta = playerConnection?.service?.currentMediaMetadata?.value
-
-            if (currentMeta?.id != partnerLive.songId) {
-              val now = System.currentTimeMillis()
-              if (lastRequestedSongId != partnerLive.songId || now - lastRequestedAt > 15000L) {
-                lastRequestedSongId = partnerLive.songId
-                lastRequestedAt = now
-                playerConnection?.playQueue(YouTubeQueue(WatchEndpoint(videoId = partnerLive.songId)))
-              }
-              delay(1000)
-              continue
-            }
-
-            val ageMs = (System.currentTimeMillis() - partnerLive.timestampEpochMs).coerceAtLeast(0L)
-            val isFresh = ageMs < 20000L
-            val isPlaying = partnerLive.isPlaying && isFresh
-            val dur = partnerLive.durationMs.takeIf { it > 0 } ?: Long.MAX_VALUE
-            val elapsed = if (isPlaying) ageMs else 0L
-            val targetMs = (partnerLive.positionMs + elapsed).coerceIn(0L, dur)
-            val currentPos = player?.currentPosition ?: 0L
-            val drift = abs(currentPos - targetMs)
-
-            if (drift > 1800L && targetMs >= 0L) {
-              player?.seekTo(targetMs)
-            }
-
-            if (isPlaying && player?.isPlaying == false) {
-              player.play()
-            } else if (!isPlaying && player?.isPlaying == true) {
-              player.pause()
-              if (drift > 1800L && targetMs >= 0L) {
-                player.seekTo(targetMs)
-              }
-            }
+            applyPartnerPlayback(partnerLive, playerConnection)
           }
         } catch (_: Exception) {}
-        delay(1100)
+        delay(2500)
       }
     }
 
     syncJob?.invokeOnCompletion {
       _isLiveSyncing.value = false
+    }
+  }
+
+  private fun applyPartnerPlayback(partnerLive: CoupleLivePlayback, playerConnection: PlayerConnection?) {
+    _partnerPlayback.value = partnerLive
+    val player = playerConnection?.player ?: return
+    val currentMeta = playerConnection.service.currentMediaMetadata.value
+
+    if (currentMeta?.id != partnerLive.songId) {
+      val now = System.currentTimeMillis()
+      if (lastRequestedSongId != partnerLive.songId || now - lastRequestedAt > 10000L) {
+        lastRequestedSongId = partnerLive.songId
+        lastRequestedAt = now
+        playerConnection.playQueue(YouTubeQueue(WatchEndpoint(videoId = partnerLive.songId)))
+      }
+      return
+    }
+
+    val ageMs = (System.currentTimeMillis() - partnerLive.timestampEpochMs).coerceAtLeast(0L)
+    val isFresh = ageMs < 25000L
+    val isPlaying = partnerLive.isPlaying && isFresh
+    val dur = partnerLive.durationMs.takeIf { it > 0 } ?: Long.MAX_VALUE
+    val elapsed = if (isPlaying) ageMs else 0L
+    val targetMs = (partnerLive.positionMs + elapsed).coerceIn(0L, dur)
+    val currentPos = player.currentPosition.coerceAtLeast(0L)
+    val drift = abs(currentPos - targetMs)
+
+    if (drift > 1200L && targetMs >= 0L) {
+      player.seekTo(targetMs)
+    }
+
+    if (isPlaying && !player.isPlaying) {
+      player.play()
+    } else if (!isPlaying && player.isPlaying) {
+      player.pause()
+      if (drift > 1200L && targetMs >= 0L) {
+        player.seekTo(targetMs)
+      }
     }
   }
 
@@ -213,6 +222,11 @@ object CouplePlaybackSyncManager {
     _isLiveSyncing.value = false
     lastRequestedSongId = null
     lastRequestedAt = 0L
+  }
+
+  fun disconnectSync() {
+    stopLiveSyncFollow()
+    stopBroadcaster()
   }
 
   fun fetchPartnerPreview(

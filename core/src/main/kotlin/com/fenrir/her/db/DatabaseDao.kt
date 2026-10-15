@@ -679,6 +679,9 @@ interface DatabaseDao {
   @Query("SELECT * FROM lyrics WHERE id = :id")
   fun lyrics(id: String?): Flow<LyricsEntity?>
 
+  @Query("SELECT id FROM lyrics WHERE lyrics != 'LYRICS_NOT_FOUND' AND lyrics != ''")
+  fun allLyricsIds(): Flow<List<String>>
+
   @Transaction
   @SuppressWarnings(RoomWarnings.QUERY_MISMATCH)
   @Query(

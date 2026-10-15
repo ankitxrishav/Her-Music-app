@@ -7,6 +7,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -210,6 +211,7 @@ fun CoupleSpaceScreen(
   var heartBurstEpochMs by rememberPreference(CoupleHeartBurstEpochKey, 0L)
   val broadcastSession = remember(broadcastJson) { RadioBroadcastSerialization.parse(broadcastJson) }
   val isMeBroadcasting = broadcastSession.isBroadcasting && broadcastSession.broadcasterRole == role.name
+  val isLiveSyncing by CouplePlaybackSyncManager.isLiveSyncing.collectAsState()
 
   LaunchedEffect(role) {
     val neededPrefix = if (role == CoupleAuthGuard.CoupleRole.HER) "HER-" else "HIM-"
@@ -289,18 +291,6 @@ fun CoupleSpaceScreen(
     }
   }
 
-  LaunchedEffect(isPaired, spaceId, role, myName, playerConnection) {
-    if (isPaired && spaceId.isNotBlank()) {
-      CouplePlaybackSyncManager.startBroadcaster(
-        scope = this,
-        spaceId = spaceId,
-        role = role,
-        myName = myName,
-        playerConnection = playerConnection,
-        customUrl = customFirebaseUrl
-      )
-    }
-  }
 
   val todayKey = remember {
     SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
@@ -308,7 +298,7 @@ fun CoupleSpaceScreen(
     }.format(Date())
   }
   val dayOfYear = remember {
-    val cal = java.util.Calendar.getInstance()
+    val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
     cal.get(java.util.Calendar.DAY_OF_YEAR)
   }
   val currentQuestion = remember(dayOfYear) {
@@ -384,6 +374,8 @@ fun CoupleSpaceScreen(
             isPaired = false
             spaceId = ""
             partnerCode = ""
+            CouplePlaybackSyncManager.stopBroadcaster()
+            CouplePlaybackSyncManager.stopLiveSyncFollow()
             showUnlinkConfirmDialog = false
             Toast.makeText(context, "Unlinked space", Toast.LENGTH_SHORT).show()
           },
@@ -445,9 +437,13 @@ fun CoupleSpaceScreen(
     )
   }
 
+  val isDark = isSystemInDarkTheme()
+  val coupleBgColor = if (isDark) Color(0xFF22161A) else Color(0xFFFFB6C1)
+
   Scaffold(
+    containerColor = coupleBgColor,
     topBar = {
-      Column(modifier = Modifier.background(MaterialTheme.colorScheme.background)) {
+      Column(modifier = Modifier.background(coupleBgColor)) {
         TopAppBar(
           title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -477,13 +473,13 @@ fun CoupleSpaceScreen(
             }
           },
           colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.background
+            containerColor = coupleBgColor
           )
         )
 
         PrimaryTabRow(
           selectedTabIndex = selectedTabIndex,
-          containerColor = MaterialTheme.colorScheme.background
+          containerColor = coupleBgColor
         ) {
           tabTitles.forEachIndexed { index, title ->
             Tab(
@@ -906,40 +902,87 @@ fun CoupleSpaceScreen(
                     }
 
                     Text(
-                      text = "Sync playback seamlessly with $partnerName in real time. Private Room: her-$spaceId",
+                      text = "Listen simultaneously with $partnerName. Invite them to sync playback instantly with zero setup.",
                       style = MaterialTheme.typography.bodyMedium,
                       color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Button(
-                      onClick = {
-                        if (listenTogetherManager != null) {
-                          coroutineScope.launch {
-                            listenTogetherManager.connect()
-                            listenTogetherManager.joinRoom("her-$spaceId", myName)
-                            Toast.makeText(context, "Joining shared room with $partnerName...", Toast.LENGTH_SHORT).show()
-                            navController.navigate("listen_together")
+                    if (isLiveSyncing) {
+                      Button(
+                        onClick = {
+                          CouplePlaybackSyncManager.disconnectSync()
+                          Toast.makeText(context, "Disjoined from sync", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                          containerColor = Color(0xFFC2185B)
+                        )
+                      ) {
+                        Icon(
+                          painter = painterResource(R.drawable.connect_people),
+                          contentDescription = null,
+                          modifier = Modifier.size(18.dp),
+                          tint = Color.White
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                          text = "Disjoin / Stop Sync 💕",
+                          fontWeight = FontWeight.Bold,
+                          color = Color.White
+                        )
+                      }
+                    } else {
+                      Button(
+                        onClick = {
+                          val meta = currentMediaMetadata
+                          val player = playerConnection?.player
+                          if (meta != null && player != null) {
+                            coroutineScope.launch {
+                              val req = CoupleSyncRequest(
+                                requestId = System.currentTimeMillis().toString(),
+                                requesterRole = role.name,
+                                requesterName = myName,
+                                songId = meta.id,
+                                title = meta.title,
+                                artist = meta.artists.joinToString { it.name },
+                                thumbnailUrl = meta.thumbnailUrl,
+                                positionMs = player.currentPosition.coerceAtLeast(0L),
+                                isPlaying = player.isPlaying,
+                                timestamp = System.currentTimeMillis()
+                              )
+                              FirebaseCoupleSync.sendSyncRequest(spaceId, req)
+                              CouplePlaybackSyncManager.startBroadcaster(
+                                scope = this,
+                                spaceId = spaceId,
+                                role = role,
+                                myName = myName,
+                                playerConnection = playerConnection,
+                                customUrl = customFirebaseUrl
+                              )
+                              Toast.makeText(context, "Sent listen invitation to $partnerName 💕", Toast.LENGTH_SHORT).show()
+                            }
+                          } else {
+                            Toast.makeText(context, "Play a track first to invite $partnerName!", Toast.LENGTH_SHORT).show()
                           }
-                        } else {
-                          navController.navigate("listen_together")
-                        }
-                      },
-                      modifier = Modifier.fillMaxWidth(),
-                      shape = RoundedCornerShape(16.dp),
-                      colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFE91E63)
-                      )
-                    ) {
-                      Icon(
-                        painter = painterResource(R.drawable.play),
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                      )
-                      Spacer(Modifier.width(8.dp))
-                      Text(
-                        text = "1-Tap Sync with $partnerName",
-                        fontWeight = FontWeight.Bold
-                      )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                          containerColor = Color(0xFFE91E63)
+                        )
+                      ) {
+                        Icon(
+                          painter = painterResource(R.drawable.favorite),
+                          contentDescription = null,
+                          modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                          text = "Invite $partnerName to Listen Together 💕",
+                          fontWeight = FontWeight.Bold
+                        )
+                      }
                     }
                   }
                 }

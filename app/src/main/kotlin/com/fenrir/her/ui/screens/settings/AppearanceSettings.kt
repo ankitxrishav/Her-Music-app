@@ -1041,23 +1041,21 @@ PlayerBackgroundStyle.LIQUID_GLASS -> stringResource(R.string.player_background_
       items =
         listOfNotNull(
           Material3SettingsItem(
-            isHighlighted = (highlightKey == "Apple Music Inspired"),
-            icon = painterResource(R.drawable.apple_music_me),
-            title = { Text("Apple Music Inspired") },
+            isHighlighted = (highlightKey == "Neo Groove Player"),
+            icon = painterResource(R.drawable.album),
+            title = { Text("Neo Groove Player (Redesign)") },
+            description = { Text("Inspiration design with rotating vinyl sleeve, waveform seekbar, and direct DAC badge") },
             trailingContent = {
               Switch(
-                checked = !useNewPlayerDesign,
+                checked = useNewPlayerDesign,
                 onCheckedChange = { isChecked ->
-                  onUseNewPlayerDesignChange(!isChecked)
-                  if (isChecked) {
-                    onPlayerBackgroundChange(PlayerBackgroundStyle.APPLE_MUSIC)
-                  }
+                  onUseNewPlayerDesignChange(isChecked)
                 },
                 thumbContent = {
                   Icon(
                     painter =
                       painterResource(
-                        id = if (!useNewPlayerDesign) R.drawable.check else R.drawable.close
+                        id = if (useNewPlayerDesign) R.drawable.check else R.drawable.close
                       ),
                     contentDescription = null,
                     modifier = Modifier.size(SwitchDefaults.IconSize)
@@ -1066,11 +1064,7 @@ PlayerBackgroundStyle.LIQUID_GLASS -> stringResource(R.string.player_background_
               )
             },
             onClick = {
-              val newAppleMusicInspired = useNewPlayerDesign
-              onUseNewPlayerDesignChange(!newAppleMusicInspired)
-              if (newAppleMusicInspired) {
-                onPlayerBackgroundChange(PlayerBackgroundStyle.APPLE_MUSIC)
-              }
+              onUseNewPlayerDesignChange(!useNewPlayerDesign)
             }
           ),
           if (!useNewPlayerDesign)

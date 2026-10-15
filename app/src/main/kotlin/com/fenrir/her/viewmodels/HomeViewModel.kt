@@ -597,11 +597,8 @@ constructor(
     val hideVideoSongs = context.dataStore.get(HideVideoSongsKey, false)
     val hideYoutubeShorts = context.dataStore.get(HideYoutubeShortsKey, false)
 
-    coroutineScope {
-      launch(Dispatchers.IO) { getDailyDiscover() }
-      launch(Dispatchers.IO) { getCommunityPlaylists() }
-      launch(Dispatchers.IO) { loadSimilarRecommendations() }
-      launch(Dispatchers.IO) {
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
         YouTube.home()
           .onSuccess { page ->
             homePage.value =
@@ -616,35 +613,55 @@ constructor(
                     if (filteredItems.isEmpty()) null else section.copy(items = filteredItems)
                   }
               )
+            allYtItems.value =
+              similarRecommendations.value?.flatMap { it.items }.orEmpty() +
+                homePage.value?.sections?.flatMap { it.items }.orEmpty()
           }
           .onFailure { reportException(it) }
-      }
-      launch(Dispatchers.IO) {
-        YouTube.explore()
-          .onSuccess { page ->
-            explorePage.value =
-              page.copy(newReleaseAlbums = page.newReleaseAlbums.filterExplicit(hideExplicit))
-          }
-          .onFailure { reportException(it) }
-      }
-      if (YouTube.cookie != null) {
-        launch(Dispatchers.IO) { loadAccountPlaylists() }
+      } finally {
+        isLoading.value = false
       }
     }
 
-    allYtItems.value =
-      similarRecommendations.value?.flatMap { it.items }.orEmpty() +
-        homePage.value?.sections?.flatMap { it.items }.orEmpty()
+    viewModelScope.launch(Dispatchers.IO) {
+      YouTube.explore()
+        .onSuccess { page ->
+          explorePage.value =
+            page.copy(newReleaseAlbums = page.newReleaseAlbums.filterExplicit(hideExplicit))
+        }
+        .onFailure { reportException(it) }
+    }
+
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        getDailyDiscover()
+      } catch (e: Exception) {
+        reportException(e)
+      }
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        getCommunityPlaylists()
+      } catch (e: Exception) {
+        reportException(e)
+      }
+    }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        loadSimilarRecommendations()
+      } catch (e: Exception) {
+        reportException(e)
+      }
+    }
+
+    if (YouTube.cookie != null) {
+      viewModelScope.launch(Dispatchers.IO) { loadAccountPlaylists() }
+    }
   }
 
   private suspend fun load() {
-    isLoading.value = true
-
     loadLocalDataPhase()
-
     loadNetworkDataPhase()
-
-    isLoading.value = false
   }
 
   private val _isLoadingMore = MutableStateFlow(false)

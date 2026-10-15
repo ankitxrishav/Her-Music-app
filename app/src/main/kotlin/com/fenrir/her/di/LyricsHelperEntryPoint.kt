@@ -9,4 +9,5 @@ import com.fenrir.her.lyrics.LyricsHelper
 @InstallIn(SingletonComponent::class)
 interface LyricsHelperEntryPoint {
   fun lyricsHelper(): LyricsHelper
+  fun database(): com.fenrir.her.db.MusicDatabase
 }

@@ -152,6 +152,16 @@ class PlayerConnection(
 
   val waitingForNetworkConnection = service.waitingForNetworkConnection
   val liveQualityState = service.liveQualityState
+  val signalPathReport = service.signalPathReport
+  val usbExclusiveEnabled = service.usbExclusiveEnabled
+  val usbDacMonitor get() = service.usbDacMonitor
+
+  fun setUsbBitPerfectEnabled(enabled: Boolean) {
+    scope.launch {
+      com.fenrir.her.playback.usb.UsbExclusivePrefs.setEnabled(context, enabled)
+    }
+  }
+
   val isCrossfading: kotlinx.coroutines.flow.StateFlow<Boolean> = service.isCrossfading
   val isAutomixing: kotlinx.coroutines.flow.StateFlow<Boolean> = service.isAutomixing
   val automixDebugInfo: kotlinx.coroutines.flow.StateFlow<MusicService.AutomixDebugInfo?> =

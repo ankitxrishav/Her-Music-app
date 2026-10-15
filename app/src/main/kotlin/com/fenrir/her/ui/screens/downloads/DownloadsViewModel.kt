@@ -4,6 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import androidx.core.content.FileProvider
+import androidx.media3.exoplayer.offline.DownloadService
+import com.fenrir.her.playback.ExoDownloadService
+import kotlinx.coroutines.flow.firstOrNull
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -95,11 +99,17 @@ constructor(
     }
   }
 
+  private fun sanitizeFolderName(name: String): String {
+    val invalid = setOf('\\', '/', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t')
+    val clean = name.map { if (it in invalid) '_' else it }.joinToString("").trim().trim('.', ' ')
+    return if (clean.isNotBlank() && clean != "." && clean != "..") clean else "Her"
+  }
+
   fun setDownloadFolder(name: String) {
-    val clean = name.trim().ifBlank { "Her" }
-    downloadFolder.value = clean
+    val safeFolder = sanitizeFolderName(name)
+    downloadFolder.value = safeFolder
     viewModelScope.launch(Dispatchers.IO) {
-      context.dataStore.edit { it[DownloadFolderNameKey] = clean }
+      context.dataStore.edit { it[DownloadFolderNameKey] = safeFolder }
       refreshLocalFiles()
     }
   }
@@ -129,7 +139,9 @@ constructor(
     combine(
       database.downloadedSongsByCreateDateAsc(),
       _scannedFiles.asStateFlow(),
-    ) { dbSongs, scanned ->
+      database.allLyricsIds(),
+    ) { dbSongs, scanned, lyricsIds ->
+      val lyricsSet = lyricsIds.toHashSet()
       val dbTracks = dbSongs.map { song ->
         val fmt = song.format
         val mime = fmt?.mimeType.orEmpty().lowercase()
@@ -152,13 +164,13 @@ constructor(
           formatBadge = badge,
           durationMs = song.song.duration * 1000L,
           isLossless = isFlac || (fmt?.bitrate ?: 0) >= 800000,
-          hasLyrics = true,
+          hasLyrics = lyricsSet.contains(song.song.id),
           downloadedAtMillis = System.currentTimeMillis(),
           originalSong = song,
         )
       }
 
-      val merged = (dbTracks + scanned).distinctBy { "${it.title.lowercase()}_${it.artist.lowercase()}" }
+      val merged = (dbTracks + scanned).distinctBy { it.id }
       merged
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -259,8 +271,10 @@ constructor(
         val lrc = File(f.parentFile, "${f.nameWithoutExtension}.lrc")
         if (lrc.exists()) lrc.delete()
       }
-      if (track.originalSong != null) {
-        database.updateDownloadedInfo(track.originalSong.song.id, false, null)
+      val songId = track.originalSong?.song?.id ?: track.id
+      database.updateDownloadedInfo(songId, false, null)
+      runCatching {
+        DownloadService.sendRemoveDownload(context, ExoDownloadService::class.java, songId, false)
       }
       refreshLocalFiles()
     }
@@ -269,26 +283,52 @@ constructor(
   fun clearAllDownloads() {
     viewModelScope.launch(Dispatchers.IO) {
       val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
-      val folder = File(musicDir, downloadFolder.value)
-      if (folder.exists()) {
-        folder.deleteRecursively()
-        folder.mkdirs()
+      val safeFolder = sanitizeFolderName(downloadFolder.value)
+      val folder = File(musicDir, safeFolder)
+      if (folder.exists() && folder.isDirectory && folder.canonicalPath.startsWith(musicDir.canonicalPath) && folder.canonicalPath != musicDir.canonicalPath) {
+        folder.walkTopDown().filter { it.isFile }.forEach { file ->
+          val ext = file.extension.lowercase()
+          if (ext in listOf("flac", "m4a", "mp3", "opus", "ogg", "lrc")) {
+            file.delete()
+          }
+        }
       }
-      val songs = database.downloadedSongsByCreateDateAsc()
-      // clear db records
+      val songs = database.downloadedSongsByCreateDateAsc().firstOrNull() ?: emptyList()
+      songs.forEach { song ->
+        database.updateDownloadedInfo(song.song.id, false, null)
+        runCatching {
+          DownloadService.sendRemoveDownload(context, ExoDownloadService::class.java, song.song.id, false)
+        }
+      }
       refreshLocalFiles()
     }
   }
 
   fun openInFileManager() {
     runCatching {
+      val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+      val safeFolder = sanitizeFolderName(downloadFolder.value)
+      val folder = File(musicDir, safeFolder)
+      if (!folder.exists()) folder.mkdirs()
+
+      val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.FileProvider",
+        folder
+      )
       val intent = Intent(Intent.ACTION_VIEW).apply {
-        val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
-        val folder = File(musicDir, downloadFolder.value)
-        setDataAndType(Uri.fromFile(folder), "resource/folder")
-        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        setDataAndType(uri, "resource/folder")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
       }
       context.startActivity(intent)
+    }.onFailure {
+      runCatching {
+        val fallbackIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+          type = "audio/*"
+          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(fallbackIntent)
+      }
     }
   }
 }

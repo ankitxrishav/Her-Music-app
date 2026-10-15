@@ -56,8 +56,7 @@ fun isFlacLikeCodec(codec: String?): Boolean {
     val c = codec?.uppercase().orEmpty()
     if (c.isBlank()) return false
     if (spatialIndicatorLabel(codec) != null) return false
-    return c.contains("FLAC") || c == "LOSSLESS" || c.contains("HI-RES") || c.contains("HI_RES") ||
-        Regex("""(?:^|[^\d])(16|24|32)\s*(?:[-_]bit)?\s*[/]\s*(\d{2,3}(?:\.\d+)?)\s*k?""", RegexOption.IGNORE_CASE).containsMatchIn(c)
+    return c.contains("FLAC")
 }
 
 fun formatSampleRateKHz(kHzOrHz: Double): String {

@@ -25,6 +25,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -500,54 +501,32 @@ class MainActivity : ComponentActivity() {
         com.fenrir.her.echomusic.updater.getLastSeenChangelogVersion(context)
         
       if (lastSeenVersion.isEmpty() || lastSeenVersion != currentVersion) {
-        // Run migrations for fresh installs and updates
         context.dataStore.edit { preferences ->
           preferences[com.fenrir.her.constants.ForceOpusKey] = true
           preferences[com.fenrir.her.constants.EnableCronetKey] = true
         }
-      }
-
-      if (lastSeenVersion.isEmpty()) {
-        // Fresh install, not an update — nothing "new" to show, so mark this
-        // version seen right away rather than waiting on a dialog dismissal.
         com.fenrir.her.echomusic.updater.saveLastSeenChangelogVersion(context, currentVersion)
-      } else if (lastSeenVersion != currentVersion) {
-        // Only mark the version seen once its changelog is actually shown (see
-        // onDismiss below) — if the fetch fails here, retry on the next launch
-        // instead of losing that version's release notes forever.
-        whatsNewInfo = com.fenrir.her.echomusic.updater.fetchChangelogForVersion(currentVersion)
       }
     }
 
     LaunchedEffect(Unit) {
-      val prefs = context.dataStore.data.first()
-
       if (getAutoUpdateCheckSetting(context)) {
-
-        delay(2000L)
+        delay(15000L)
         checkForUpdate(
           context = context,
           onSuccess = { latestVersion, isAvailable, changelog, _, _, description, _, _ ->
-            val currentVersion = BuildConfig.VERSION_NAME
-            Log.d(
-              "UpdateCheck",
-              "Startup check success. Latest: $latestVersion, Current: $currentVersion, isAvailable: $isAvailable"
-            )
             saveUpdateAvailableState(context, isAvailable)
-
             if (isAvailable) {
               availableUpdateVersion = latestVersion
               availableUpdateChangelog = changelog
               availableUpdateDescription = description
               showUpdateDialog = false
             }
-
             if (isAvailable && getUpdateNotificationsSetting(context)) {
-              Log.d("UpdateCheck", "Posting update notification for $latestVersion")
               UpdateNotificationHelper.showUpdateNotification(context, latestVersion)
             }
           },
-          onError = { Log.e("UpdateCheck", "Startup check failed") }
+          onError = { Log.e("UpdateCheck", "Background check failed") }
         )
       }
     }
@@ -556,23 +535,23 @@ class MainActivity : ComponentActivity() {
       val window = this@MainActivity.window
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         val layoutParams = window.attributes
-        if (enableHighRefreshRate) {
-          layoutParams.preferredDisplayModeId = 0
-        } else {
-          val modes = window.windowManager.defaultDisplay.supportedModes
-          val mode60 =
-            modes.firstOrNull { kotlin.math.abs(it.refreshRate - 60f) < 1f }
-              ?: modes.minByOrNull { kotlin.math.abs(it.refreshRate - 60f) }
+        val displayObj = runCatching { this@MainActivity.display }.getOrNull()
+        val modes = displayObj?.supportedModes ?: window.windowManager.defaultDisplay.supportedModes
+        val highestMode = modes.maxByOrNull { it.refreshRate }
+        val mode60 =
+          modes.firstOrNull { kotlin.math.abs(it.refreshRate - 60f) < 1f }
+            ?: modes.minByOrNull { kotlin.math.abs(it.refreshRate - 60f) }
 
-          if (mode60 != null) {
-            layoutParams.preferredDisplayModeId = mode60.modeId
-          }
+        if (enableHighRefreshRate && highestMode != null) {
+          layoutParams.preferredDisplayModeId = highestMode.modeId
+        } else if (mode60 != null) {
+          layoutParams.preferredDisplayModeId = mode60.modeId
         }
         window.attributes = layoutParams
       } else {
         val params = window.attributes
         if (enableHighRefreshRate) {
-          params.preferredRefreshRate = 0f
+          params.preferredRefreshRate = 120f
         } else {
           params.preferredRefreshRate = 60f
         }
@@ -675,28 +654,6 @@ class MainActivity : ComponentActivity() {
         modifier =
           Modifier.fillMaxSize()
             .background(if (pureBlack) Color.Black else MaterialTheme.colorScheme.surface)
-            .pointerInput(enableHaptics) {
-              if (enableHaptics) {
-                awaitPointerEventScope {
-                  while (true) {
-                    val event =
-                      awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
-                    val isClick = event.changes.any { it.changedToDown() }
-                    val isScroll =
-                      event.changes.any { it.positionChange() != Offset.Zero && it.pressed }
-                    if (isClick) {
-                      view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    } else if (isScroll) {
-                      val currentTime = System.currentTimeMillis()
-                      if (currentTime - lastScrollHapticTime > 100) {
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        lastScrollHapticTime = currentTime
-                      }
-                    }
-                  }
-                }
-              }
-            }
       ) {
         val focusManager = LocalFocusManager.current
         val density = LocalDensity.current
@@ -942,6 +899,7 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(isCouplePaired, coupleSpaceId, coupleRole, coupleMyName, playerConnection) {
           if (isCouplePaired && coupleSpaceId.isNotBlank()) {
+            com.fenrir.her.couple.FirebaseCoupleSync.subscribeSpace(coupleSpaceId)
             com.fenrir.her.couple.CouplePlaybackSyncManager.startBroadcaster(
               scope = this,
               spaceId = coupleSpaceId,
@@ -1027,6 +985,8 @@ class MainActivity : ComponentActivity() {
             handleAssistantSearchIntent(intent, navController)
           } else if (intent != null && intent.action == "com.fenrir.her.PLAY_PUSHED_SONG") {
             handlePushSongIntent(intent)
+          } else if (intent != null && intent.action?.startsWith("com.fenrir.her.") == true) {
+            handleSyncIntent(intent)
           }
         }
 
@@ -1043,6 +1003,8 @@ class MainActivity : ComponentActivity() {
                 handleAssistantSearchIntent(intent, navController)
               } else if (intent.action == "com.fenrir.her.PLAY_PUSHED_SONG") {
                 handlePushSongIntent(intent)
+              } else if (intent.action?.startsWith("com.fenrir.her.") == true) {
+                handleSyncIntent(intent)
               }
             }
 
@@ -1336,11 +1298,11 @@ class MainActivity : ComponentActivity() {
                         shuffleContentDescription = stringResource(R.string.shuffle),
                         onMusicRecognitionClick = onMusicRecognitionClick,
                         musicRecognitionContentDescription = stringResource(R.string.recognition),
-                        onAiHubClick = {
-                          navController.navigate("settings/ai") { launchSingleTop = true }
+                        onSettingsClick = {
+                          navController.navigate("settings") { launchSingleTop = true }
                         },
-                        aiHubIconRes = R.drawable.sparks,
-                        aiHubContentDescription = stringResource(R.string.ai_lyrics_translation),
+                        settingsIconRes = R.drawable.settings,
+                        settingsContentDescription = stringResource(R.string.settings),
                         onSearchLongClick = onRailSearchLongClick,
                         isSelected = { screen ->
                           currentRoute == screen.route ||
@@ -1478,11 +1440,11 @@ class MainActivity : ComponentActivity() {
                   shuffleEnabled = shuffleEnabled,
                   shuffleIconRes = R.drawable.shuffle,
                   shuffleContentDescription = stringResource(R.string.shuffle),
-                  onAiHubClick = {
-                    navController.navigate("settings/ai") { launchSingleTop = true }
+                  onSettingsClick = {
+                    navController.navigate("settings") { launchSingleTop = true }
                   },
-                  aiHubIconRes = R.drawable.sparks,
-                  aiHubContentDescription = stringResource(R.string.ai_lyrics_translation)
+                  settingsIconRes = R.drawable.settings,
+                  settingsContentDescription = stringResource(R.string.settings)
                 )
               }
               Box(Modifier.weight(1f)) {
@@ -1569,6 +1531,187 @@ class MainActivity : ComponentActivity() {
                   heartBurstEpochMs = heartBurstEpoch,
                   modifier = Modifier.fillMaxSize()
                 )
+
+                val incomingSyncReq by com.fenrir.her.couple.FirebaseCoupleSync.syncRequestFlow.collectAsState()
+                val syncResp by com.fenrir.her.couple.FirebaseCoupleSync.syncResponseFlow.collectAsState()
+
+                LaunchedEffect(syncResp) {
+                  syncResp?.let { resp ->
+                    val partnerTxt = resp.responderName.ifBlank { "Partner" }
+                    if (resp.accepted) {
+                      android.widget.Toast.makeText(this@MainActivity, "$partnerTxt accepted! Listening together 💕", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                      android.widget.Toast.makeText(this@MainActivity, "$partnerTxt declined the sync request.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                }
+
+                incomingSyncReq?.let { req ->
+                  androidx.compose.ui.window.Dialog(
+                    onDismissRequest = {
+                      coroutineScope.launch {
+                        com.fenrir.her.couple.FirebaseCoupleSync.sendSyncResponse(
+                          coupleSpaceId,
+                          com.fenrir.her.couple.CoupleSyncResponse(
+                            requestId = req.requestId,
+                            responderRole = coupleRole.name,
+                            responderName = coupleMyName,
+                            accepted = false,
+                            timestamp = System.currentTimeMillis()
+                          )
+                        )
+                      }
+                      com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+                    }
+                  ) {
+                    Surface(
+                      shape = RoundedCornerShape(24.dp),
+                      color = MaterialTheme.colorScheme.surface,
+                      tonalElevation = 6.dp,
+                      modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)
+                    ) {
+                      Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                      ) {
+                        Box(
+                          modifier = Modifier.size(54.dp).clip(CircleShape).background(Color(0xFFFF4081).copy(alpha = 0.15f)),
+                          contentAlignment = Alignment.Center
+                        ) {
+                          Icon(
+                            painter = painterResource(R.drawable.favorite),
+                            contentDescription = null,
+                            tint = Color(0xFFFF4081),
+                            modifier = Modifier.size(28.dp)
+                          )
+                        }
+                        Text(
+                          text = "Listen Together 💕",
+                          style = MaterialTheme.typography.titleLarge,
+                          fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                          text = "${req.requesterName.ifBlank { "Your partner" }} wants to listen together with you!",
+                          style = MaterialTheme.typography.bodyMedium,
+                          textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Surface(
+                          shape = RoundedCornerShape(14.dp),
+                          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                          modifier = Modifier.fillMaxWidth()
+                        ) {
+                          Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                            Box(
+                              modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+                              contentAlignment = Alignment.Center
+                            ) {
+                              if (!req.thumbnailUrl.isNullOrBlank()) {
+                                coil3.compose.AsyncImage(
+                                  model = req.thumbnailUrl,
+                                  contentDescription = null,
+                                  modifier = Modifier.fillMaxSize(),
+                                  contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                )
+                              } else {
+                                Icon(
+                                  painter = painterResource(R.drawable.music_note),
+                                  contentDescription = null,
+                                  tint = MaterialTheme.colorScheme.primary
+                                )
+                              }
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                              Text(
+                                text = req.title.ifBlank { "Track" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                              )
+                              Text(
+                                text = req.artist.ifBlank { "Unknown" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                              )
+                            }
+                          }
+                        }
+                        Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                          androidx.compose.material3.OutlinedButton(
+                            onClick = {
+                              coroutineScope.launch {
+                                com.fenrir.her.couple.FirebaseCoupleSync.sendSyncResponse(
+                                  coupleSpaceId,
+                                  com.fenrir.her.couple.CoupleSyncResponse(
+                                    requestId = req.requestId,
+                                    responderRole = coupleRole.name,
+                                    responderName = coupleMyName,
+                                    accepted = false,
+                                    timestamp = System.currentTimeMillis()
+                                  )
+                                )
+                              }
+                              com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                          ) {
+                            Text("Decline")
+                          }
+                          androidx.compose.material3.Button(
+                            onClick = {
+                              coroutineScope.launch {
+                                com.fenrir.her.couple.FirebaseCoupleSync.sendSyncResponse(
+                                  coupleSpaceId,
+                                  com.fenrir.her.couple.CoupleSyncResponse(
+                                    requestId = req.requestId,
+                                    responderRole = coupleRole.name,
+                                    responderName = coupleMyName,
+                                    accepted = true,
+                                    timestamp = System.currentTimeMillis()
+                                  )
+                                )
+                                com.fenrir.her.couple.CouplePlaybackSyncManager.startLiveSyncFollow(
+                                  scope = this,
+                                  spaceId = coupleSpaceId,
+                                  myRole = coupleRole,
+                                  playerConnection = playerConnection,
+                                  customUrl = customCoupleFirebaseUrl
+                                )
+                              }
+                              if (req.songId.isNotBlank()) {
+                                playerConnection?.playQueue(
+                                  com.fenrir.her.playback.queues.YouTubeQueue(
+                                    com.music.innertube.models.WatchEndpoint(videoId = req.songId)
+                                  )
+                                )
+                                if (req.positionMs > 0L) {
+                                  playerConnection?.player?.seekTo(req.positionMs)
+                                }
+                              }
+                              com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4081))
+                          ) {
+                            Text("Accept 💕", fontWeight = FontWeight.Bold, color = Color.White)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -1819,6 +1962,97 @@ class MainActivity : ComponentActivity() {
       }
       intent.action = null
     }
+  }
+
+  private fun handleSyncIntent(intent: Intent) {
+    val action = intent.action ?: return
+    if (
+      action != "com.fenrir.her.ACCEPT_SYNC_REQUEST" &&
+      action != "com.fenrir.her.DECLINE_SYNC_REQUEST" &&
+      action != "com.fenrir.her.OPEN_SYNC_REQUEST"
+    ) return
+
+    com.fenrir.her.couple.CoupleSyncNotificationManager.dismissNotification(this)
+
+    when (action) {
+      "com.fenrir.her.ACCEPT_SYNC_REQUEST" -> {
+        val spaceId = intent.getStringExtra("EXTRA_SPACE_ID") ?: ""
+        val reqId = intent.getStringExtra("EXTRA_REQ_ID") ?: ""
+        val songId = intent.getStringExtra("EXTRA_SONG_ID") ?: ""
+        val posMs = intent.getLongExtra("EXTRA_POSITION_MS", 0L)
+        val requesterName = intent.getStringExtra("EXTRA_REQUESTER_NAME") ?: "Partner"
+        lifecycle.coroutineScope.launch {
+          val customUrl = dataStore.get(com.fenrir.her.constants.CoupleFirebaseUrlKey, "").ifBlank { null }
+          val coupleRolePref = dataStore.get(com.fenrir.her.constants.CoupleRoleKey, "HIM")
+          val coupleRole = if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
+          val customMyName = dataStore.get(com.fenrir.her.constants.CoupleMyNameKey, "")
+          val myName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(coupleRole, customMyName)
+
+          if (spaceId.isNotBlank()) {
+            com.fenrir.her.couple.FirebaseCoupleSync.sendSyncResponse(
+              spaceId,
+              com.fenrir.her.couple.CoupleSyncResponse(
+                requestId = reqId,
+                responderRole = coupleRole.name,
+                responderName = myName,
+                accepted = true,
+                timestamp = System.currentTimeMillis()
+              )
+            )
+            com.fenrir.her.couple.CouplePlaybackSyncManager.startLiveSyncFollow(
+              scope = this,
+              spaceId = spaceId,
+              myRole = coupleRole,
+              playerConnection = playerConnection,
+              customUrl = customUrl
+            )
+          }
+
+          var attempts = 0
+          while (playerConnection == null && attempts < 25) {
+            delay(100)
+            attempts++
+          }
+
+          if (songId.isNotBlank()) {
+            playerConnection?.playQueue(
+              com.fenrir.her.playback.queues.YouTubeQueue(
+                com.music.innertube.models.WatchEndpoint(videoId = songId)
+              )
+            )
+            if (posMs > 0L) {
+              playerConnection?.player?.seekTo(posMs)
+            }
+          }
+          com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+          android.widget.Toast.makeText(this@MainActivity, "Listening together with $requesterName 💕", android.widget.Toast.LENGTH_LONG).show()
+        }
+      }
+      "com.fenrir.her.DECLINE_SYNC_REQUEST" -> {
+        val spaceId = intent.getStringExtra("EXTRA_SPACE_ID") ?: ""
+        val reqId = intent.getStringExtra("EXTRA_REQ_ID") ?: ""
+        lifecycle.coroutineScope.launch {
+          val coupleRolePref = dataStore.get(com.fenrir.her.constants.CoupleRoleKey, "HIM")
+          val coupleRole = if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
+          val customMyName = dataStore.get(com.fenrir.her.constants.CoupleMyNameKey, "")
+          val myName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(coupleRole, customMyName)
+          if (spaceId.isNotBlank()) {
+            com.fenrir.her.couple.FirebaseCoupleSync.sendSyncResponse(
+              spaceId,
+              com.fenrir.her.couple.CoupleSyncResponse(
+                requestId = reqId,
+                responderRole = coupleRole.name,
+                responderName = myName,
+                accepted = false,
+                timestamp = System.currentTimeMillis()
+              )
+            )
+          }
+          com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+        }
+      }
+    }
+    intent.action = null
   }
 }
 

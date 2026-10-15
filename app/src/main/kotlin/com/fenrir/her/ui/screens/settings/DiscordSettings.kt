@@ -273,7 +273,7 @@ fun DiscordSettings(
   val (button2Label) =
     rememberPreference(
       key = DiscordActivityButton2LabelKey,
-      defaultValue = "Go to Echo Music",
+      defaultValue = "Go to Her Music",
     )
   val (button2Enabled) =
     rememberPreference(

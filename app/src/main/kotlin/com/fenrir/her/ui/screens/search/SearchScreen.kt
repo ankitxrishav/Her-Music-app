@@ -8,21 +8,27 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -73,6 +79,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -212,18 +219,22 @@ fun SearchScreen(navController: NavController, pureBlack: Boolean) {
     }
   }
 
+  val isDark = isSystemInDarkTheme()
+  val searchBgColor = if (pureBlack) Color.Black else if (isDark) Color(0xFF171520) else Color(0xFFDCD9F8)
+  val searchBarColor = if (pureBlack) Color(0xFF1E1E1E) else if (isDark) Color(0xFF262334) else Color(0xFFFFFDF8)
+  val searchBarBorder = if (isDark) Color(0x22FFFFFF) else Color(0x18000000)
+
   Scaffold(
     topBar = {
       Column(
         modifier =
-          Modifier.background(if (pureBlack) Color.Black else MaterialTheme.colorScheme.surface)
+          Modifier.background(searchBgColor)
             .windowInsetsPadding(WindowInsets.statusBars)
       ) {
         Surface(
           shape = RoundedCornerShape(28.dp),
-          color =
-            if (pureBlack) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-            else MaterialTheme.colorScheme.surfaceVariant,
+          color = searchBarColor,
+          border = BorderStroke(1.dp, searchBarBorder),
           modifier =
             Modifier.fillMaxWidth()
               .padding(horizontal = searchBarHorizontalPadding)
@@ -260,13 +271,7 @@ fun SearchScreen(navController: NavController, pureBlack: Boolean) {
             ) {
               if (query.text.isEmpty()) {
                 Text(
-                  text =
-                    stringResource(
-                      when (searchSource) {
-                        SearchSource.LOCAL -> R.string.search_library
-                        SearchSource.ONLINE -> R.string.search_yt_music
-                      }
-                    ),
+                  text = "Search songs, artists, moods...",
                   style =
                     TextStyle(
                       color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -330,7 +335,7 @@ fun SearchScreen(navController: NavController, pureBlack: Boolean) {
 
       }
     },
-    containerColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.background
+    containerColor = searchBgColor
   ) { paddingValues ->
     val bottomPadding =
       LocalPlayerAwareWindowInsets.current.asPaddingValues().calculateBottomPadding()
@@ -360,7 +365,15 @@ fun SearchScreen(navController: NavController, pureBlack: Boolean) {
             }
       } else if (!searchActive) {
         val tabPadding = PaddingValues(bottom = bottomPadding)
-        SuggestionsTabContent(navController = navController, contentPadding = tabPadding)
+        NeoSearchLandingView(
+          navController = navController,
+          contentPadding = tabPadding,
+          onSelectSearch = {
+            query = TextFieldValue(it)
+            onSearch(it)
+            searchActive = false
+          }
+        )
       }
     }
   }
@@ -523,3 +536,208 @@ fun AlbumsTabContent(
     }
   }
 }
+
+@Composable
+fun NeoSearchLandingView(
+  navController: NavController,
+  contentPadding: PaddingValues,
+  onSelectSearch: (String) -> Unit
+) {
+  val isDark = isSystemInDarkTheme()
+  val sectionTitleColor = if (isDark) Color.White else Color(0xFF191712)
+  val cardBg = if (isDark) Color(0xFF262234) else Color(0xFFFFFDF8)
+  val cardBorder = if (isDark) Color(0x22FFFFFF) else Color(0x18000000)
+
+  val trendingChips = listOf("Love songs", "Acoustic", "Lofi Beats", "Night Drive", "Romantic", "Chillhop")
+
+  data class MoodCardItem(val title: String, val emoji: String, val subtitle: String, val bgLight: Color, val bgDark: Color)
+  val moodCards = listOf(
+    MoodCardItem("Happy", "😄", "Feel-good hits", Color(0xFFFFF7C2), Color(0xFF332D15)),
+    MoodCardItem("Sad", "🌧️", "Melancholic tones", Color(0xFFD7E8FA), Color(0xFF152636)),
+    MoodCardItem("Love", "💖", "Romantic melodies", Color(0xFFFFD6E0), Color(0xFF361822)),
+    MoodCardItem("Focus", "🎯", "Deep concentration", Color(0xFFDCF5E2), Color(0xFF16331E)),
+    MoodCardItem("Workout", "⚡", "High energy", Color(0xFFFFE0D2), Color(0xFF362015)),
+    MoodCardItem("Chill", "🌙", "Relax & unwind", Color(0xFFE5E2F8), Color(0xFF221E36)),
+  )
+
+  data class ArtistItemSimple(val name: String, val genre: String)
+  val popularArtists = listOf(
+    ArtistItemSimple("Taylor Swift", "Pop"),
+    ArtistItemSimple("JVKE", "Pop / Indie"),
+    ArtistItemSimple("The Weeknd", "R&B / Pop"),
+    ArtistItemSimple("Billie Eilish", "Alt / Pop"),
+    ArtistItemSimple("Ed Sheeran", "Pop / Acoustic"),
+    ArtistItemSimple("Ariana Grande", "Pop"),
+    ArtistItemSimple("Coldplay", "Rock / Alt"),
+  )
+
+  LazyColumn(
+    modifier = Modifier.fillMaxSize(),
+    contentPadding = contentPadding
+  ) {
+    item(key = "trending_title") {
+      Text(
+        text = "Trending Searches",
+        style = MaterialTheme.typography.titleMedium.copy(
+          fontWeight = FontWeight.Bold,
+          fontSize = 18.sp
+        ),
+        color = sectionTitleColor,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+      )
+    }
+
+    item(key = "trending_chips") {
+      LazyRow(
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        items(trendingChips) { chip ->
+          Surface(
+            shape = RoundedCornerShape(100),
+            color = cardBg,
+            border = BorderStroke(1.dp, cardBorder),
+            onClick = { onSelectSearch(chip) }
+          ) {
+            Text(
+              text = chip,
+              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+              color = sectionTitleColor,
+              modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+          }
+        }
+      }
+    }
+
+    item(key = "mood_title") {
+      Spacer(Modifier.height(16.dp))
+      Text(
+        text = "Browse by Mood",
+        style = MaterialTheme.typography.titleMedium.copy(
+          fontWeight = FontWeight.Bold,
+          fontSize = 18.sp
+        ),
+        color = sectionTitleColor,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+      )
+    }
+
+    item(key = "mood_grid") {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        moodCards.chunked(2).forEach { rowMoods ->
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            rowMoods.forEach { mood ->
+              Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = if (isDark) mood.bgDark else mood.bgLight,
+                border = BorderStroke(1.dp, cardBorder),
+                modifier = Modifier
+                  .weight(1f)
+                  .height(84.dp)
+                  .clickable { onSelectSearch("${mood.title} mood music") }
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = mood.title,
+                      style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                      ),
+                      color = if (isDark) Color.White else Color(0xFF1E1B26)
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                      text = mood.subtitle,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = if (isDark) Color.White.copy(alpha = 0.7f) else Color(0xFF555555),
+                      maxLines = 1
+                    )
+                  }
+                  Text(
+                    text = mood.emoji,
+                    fontSize = 26.sp
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    item(key = "popular_artists_title") {
+      Spacer(Modifier.height(16.dp))
+      Text(
+        text = "Popular Artists",
+        style = MaterialTheme.typography.titleMedium.copy(
+          fontWeight = FontWeight.Bold,
+          fontSize = 18.sp
+        ),
+        color = sectionTitleColor,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+      )
+    }
+
+    item(key = "popular_artists_row") {
+      LazyRow(
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        items(popularArtists) { artist ->
+          Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+              .width(80.dp)
+              .clickable { onSelectSearch(artist.name) }
+          ) {
+            Box(
+              modifier = Modifier
+                .size(68.dp)
+                .clip(CircleShape)
+                .background(if (isDark) Color(0xFF332F44) else Color(0xFFECEAF8))
+                .border(1.dp, cardBorder, CircleShape),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = artist.name.take(1),
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 24.sp
+                ),
+                color = if (isDark) Color.White else Color(0xFF4C3E72)
+              )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+              text = artist.name,
+              style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+              color = sectionTitleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+      }
+      Spacer(Modifier.height(24.dp))
+    }
+  }
+}
+

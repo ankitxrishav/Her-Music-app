@@ -98,6 +98,9 @@ fun FloatingNavigationToolbar(
   shuffleContentDescription: String = "",
   onMusicRecognitionClick: (() -> Unit)? = null,
   musicRecognitionContentDescription: String = "",
+  onSettingsClick: (() -> Unit)? = null,
+  settingsIconRes: Int? = R.drawable.settings,
+  settingsContentDescription: String = "",
   onAiHubClick: (() -> Unit)? = null,
   aiHubIconRes: Int? = null,
   aiHubContentDescription: String = "",
@@ -164,6 +167,9 @@ fun FloatingNavigationToolbar(
         onShuffleClick = onShuffleClick,
         shuffleEnabled = shuffleEnabled,
         shuffleIconRes = shuffleIconRes,
+        onSettingsClick = onSettingsClick,
+        settingsIconRes = settingsIconRes,
+        settingsContentDescription = settingsContentDescription,
         onAiHubClick = onAiHubClick,
         aiHubIconRes = aiHubIconRes,
         aiHubContentDescription = aiHubContentDescription,
@@ -190,6 +196,9 @@ private fun ToolbarItemsContainer(
   onShuffleClick: (() -> Unit)? = null,
   shuffleEnabled: Boolean = false,
   shuffleIconRes: Int? = null,
+  onSettingsClick: (() -> Unit)? = null,
+  settingsIconRes: Int? = null,
+  settingsContentDescription: String = "",
   onAiHubClick: (() -> Unit)? = null,
   aiHubIconRes: Int? = null,
   aiHubContentDescription: String = "",
@@ -272,6 +281,9 @@ private fun ToolbarItemsContainer(
           onShuffleClick = onShuffleClick,
           shuffleEnabled = shuffleEnabled,
           shuffleIconRes = shuffleIconRes,
+          onSettingsClick = onSettingsClick,
+          settingsIconRes = settingsIconRes,
+          settingsContentDescription = settingsContentDescription,
           onAiHubClick = onAiHubClick,
           aiHubIconRes = aiHubIconRes,
           aiHubContentDescription = aiHubContentDescription
@@ -295,9 +307,12 @@ fun FloatingToolbarOverflowMenuButton(
   onShuffleClick: (() -> Unit)?,
   shuffleEnabled: Boolean,
   shuffleIconRes: Int?,
-  onAiHubClick: (() -> Unit)?,
-  aiHubIconRes: Int?,
-  aiHubContentDescription: String,
+  onSettingsClick: (() -> Unit)? = null,
+  settingsIconRes: Int? = null,
+  settingsContentDescription: String = "",
+  onAiHubClick: (() -> Unit)? = null,
+  aiHubIconRes: Int? = null,
+  aiHubContentDescription: String = "",
 ) {
   var showSheet by rememberSaveable { mutableStateOf(false) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -362,18 +377,26 @@ fun FloatingToolbarOverflowMenuButton(
                   )
                 }
 
-                if (onAiHubClick != null && aiHubIconRes != null) {
+                val effectiveSettingsClick = onSettingsClick ?: onAiHubClick
+                val effectiveSettingsIcon = settingsIconRes ?: aiHubIconRes ?: R.drawable.settings
+                val effectiveSettingsTitle = when {
+                  settingsContentDescription.isNotBlank() -> settingsContentDescription
+                  aiHubContentDescription.isNotBlank() && aiHubContentDescription != stringResource(R.string.ai_lyrics_translation) -> aiHubContentDescription
+                  else -> stringResource(R.string.settings)
+                }
+
+                if (effectiveSettingsClick != null) {
                   add(
                     Material3SettingsItem(
-                      title = { Text(aiHubContentDescription) },
-                      icon = painterResource(aiHubIconRes),
+                      title = { Text(effectiveSettingsTitle) },
+                      icon = painterResource(effectiveSettingsIcon),
                       onClick = {
                         scope
                           .launch { sheetState.hide() }
                           .invokeOnCompletion {
                             if (!sheetState.isVisible) {
                               showSheet = false
-                              onAiHubClick()
+                              effectiveSettingsClick()
                             }
                           }
                       }

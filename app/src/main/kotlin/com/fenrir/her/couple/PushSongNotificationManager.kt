@@ -42,6 +42,10 @@ object PushSongNotificationManager {
       val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
         description = descriptionText
         enableVibration(true)
+        vibrationPattern = longArrayOf(0, 350, 150, 350)
+        enableLights(true)
+        lightColor = 0xFFE91E63.toInt()
+        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
       }
       val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       notificationManager.createNotificationChannel(channel)
@@ -77,19 +81,30 @@ object PushSongNotificationManager {
     )
 
     val senderDisplay = pushSong.senderName.ifBlank { "Your partner" }
-    val title = "💖 $senderDisplay pushed a song!"
+    val title = "💖 $senderDisplay sent you a song!"
     val content = "${pushSong.title} • ${pushSong.artist}"
-    val subText = pushSong.message?.ifBlank { "Listen together" } ?: "Listen together"
+    val subText = pushSong.message?.ifBlank { "Listen together with me" } ?: "Listen together with me"
 
     val builder = NotificationCompat.Builder(context, CHANNEL_ID)
       .setSmallIcon(R.drawable.favorite)
       .setContentTitle(title)
       .setContentText(content)
-      .setSubText(subText)
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setSubText("Her Couple Space")
+      .setStyle(
+        NotificationCompat.BigTextStyle()
+          .bigText("${pushSong.title}\n${pushSong.artist}\n\n\"$subText\"")
+          .setSummaryText("Her • $senderDisplay")
+      )
+      .setPriority(NotificationCompat.PRIORITY_MAX)
+      .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+      .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+      .setColor(0xFFE91E63.toInt())
+      .setColorized(true)
+      .setVibrate(longArrayOf(0, 350, 150, 350))
       .setAutoCancel(true)
       .setContentIntent(contentPendingIntent)
       .addAction(R.drawable.play, "▶ Listen Now", playPendingIntent)
+      .addAction(R.drawable.favorite, "Open Her Space", contentPendingIntent)
 
     if (
       Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||

@@ -60,6 +60,15 @@ import androidx.media3.exoplayer.analytics.PlaybackStats
 import androidx.media3.exoplayer.analytics.PlaybackStatsListener
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import com.fenrir.her.playback.usb.BitPerfectAudioSink
+import com.fenrir.her.playback.usb.UsbBitPerfectOutput
+import com.fenrir.her.playback.usb.UsbDacMonitor
+import com.fenrir.her.playback.usb.UsbExclusivePrefs
+import com.fenrir.her.playback.usb.SignalPathReport
+import com.fenrir.her.playback.usb.SignalPathInput
+import com.fenrir.her.playback.usb.evaluateSignalPath
+import com.fenrir.her.playback.usb.StreamHealthTracker
+import com.fenrir.her.playback.usb.mixerRateHz
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import androidx.media3.session.CommandButton
@@ -453,6 +462,16 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
 
   val liveQualityState = MutableStateFlow(com.fenrir.her.playback.LiveQualityState())
 
+  lateinit var usbDacMonitor: com.fenrir.her.playback.usb.UsbDacMonitor
+    private set
+  lateinit var usbBitPerfectOutput: com.fenrir.her.playback.usb.UsbBitPerfectOutput
+    private set
+  var currentAudioSink: com.fenrir.her.playback.usb.BitPerfectAudioSink? = null
+    private set
+  private val streamHealthTracker = com.fenrir.her.playback.usb.StreamHealthTracker()
+  val signalPathReport = MutableStateFlow(com.fenrir.her.playback.usb.SignalPathReport.initial())
+  val usbExclusiveEnabled = MutableStateFlow(false)
+
   private var currentMediaIdRetryCount = mutableMapOf<String, Int>()
   private val MAX_RETRY_PER_SONG = 3
   private val RETRY_DELAY_MS = 1000L
@@ -624,6 +643,10 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
         setSmallIcon(R.drawable.ic_launcher_nobg)
       },
     )
+    audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    usbDacMonitor = com.fenrir.her.playback.usb.UsbDacMonitor(applicationContext, scope)
+    usbBitPerfectOutput = com.fenrir.her.playback.usb.UsbBitPerfectOutput(audioManager)
+
     player = createExoPlayer()
     player.addListener(this@MusicService)
     sleepTimer = SleepTimer(scope, player)
@@ -631,7 +654,28 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     playerInitialized.value = true
     Timber.tag(TAG).d("Player successfully initialized")
 
-    audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    scope.launch {
+      com.fenrir.her.playback.usb.UsbExclusivePrefs.enabledFlow(this@MusicService).collect { enabled ->
+        usbExclusiveEnabled.value = enabled
+        currentAudioSink?.bitPerfectEnabled = enabled
+        updateSignalPathReport()
+      }
+    }
+    scope.launch {
+      usbDacMonitor.state.collect {
+        currentAudioSink?.applyBitPerfectFormat()
+        updateSignalPathReport()
+      }
+    }
+    scope.launch {
+      while (isActive) {
+        if (playerInitialized.value && player.isPlaying) {
+          updateSignalPathReport()
+        }
+        delay(1000)
+      }
+    }
+
     abandonAudioFocus()
     setupAudioFocusRequest()
 
@@ -1159,20 +1203,13 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
       }
     }
 
-    scope.launch {
+    scope.launch(Dispatchers.IO) {
       while (isActive) {
-        delay(30.seconds)
+        delay(25.seconds)
         if (dataStore.get(PersistentQueueKey, true)) {
-          saveQueueToDisk()
-        }
-      }
-    }
-
-    scope.launch {
-      while (isActive) {
-        delay(10.seconds)
-        if (dataStore.get(PersistentQueueKey, true) && player.isPlaying) {
-          saveQueueToDisk()
+          withContext(Dispatchers.Main) {
+            saveQueueToDisk()
+          }
         }
       }
     }
@@ -3324,8 +3361,8 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
         context: Context,
         enableFloatOutput: Boolean,
         enableAudioTrackPlaybackParams: Boolean,
-      ) =
-        DefaultAudioSink.Builder(this@MusicService)
+      ): androidx.media3.exoplayer.audio.AudioSink {
+        val defaultSink = DefaultAudioSink.Builder(this@MusicService)
           .setEnableFloatOutput(enableFloatOutput)
           .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
           .setAudioProcessorChain(
@@ -3341,7 +3378,86 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
             ),
           )
           .build()
+
+        val bitPerfectSink = BitPerfectAudioSink(
+          delegate = defaultSink,
+          usbBitPerfectOutput = if (::usbBitPerfectOutput.isInitialized) usbBitPerfectOutput else null,
+          usbDacMonitor = if (::usbDacMonitor.isInitialized) usbDacMonitor else null,
+        ).apply {
+          bitPerfectEnabled = usbExclusiveEnabled.value
+          onConfiguredFormat = { _, _, _ ->
+            scope.launch(Dispatchers.Main) {
+              updateSignalPathReport()
+            }
+          }
+        }
+        currentAudioSink = bitPerfectSink
+        return bitPerfectSink
+      }
     }
+
+  fun updateSignalPathReport() {
+    if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+      android.os.Handler(android.os.Looper.getMainLooper()).post {
+        updateSignalPathReport()
+      }
+      return
+    }
+    runCatching {
+      if (!playerInitialized.value || !::usbDacMonitor.isInitialized || !::usbBitPerfectOutput.isInitialized) return
+      val currentDac = usbDacMonitor.state.value.dac
+      val isUsbAttached = currentDac != null
+      val targetAudioSink = currentAudioSink
+      val trackRate = targetAudioSink?.appOutputRateHz ?: 0
+      val platRate = audioManager.mixerRateHz()
+      val isPlaying = player.isPlaying
+      val speed = player.playbackParameters.speed
+      val appVol = targetAudioSink?.appVolume ?: 1f
+      val sysVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+      val maxSysVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+      val isFixed = audioManager.isVolumeFixed
+      val isCrossfade = isCrossfading.value
+      val isEqActive = equalizerService.isEnabled()
+      val dspBypass = !isEqActive
+
+      val drift = streamHealthTracker.sample(player.currentPosition, System.currentTimeMillis(), isPlaying)
+      val isConfigured = usbBitPerfectOutput.isConfigured()
+
+      val liveQuality = liveQualityState.value
+      val srcLabel = com.fenrir.her.playback.qualityBadgeLabel(liveQuality)
+      val srcRate = (liveQuality.samplingRateKHz?.times(1000))?.toInt() ?: trackRate.takeIf { it > 0 }
+      val srcBits = liveQuality.bitDepth
+
+      val input = SignalPathInput(
+        sourceLabel = srcLabel,
+        sourceRateHz = srcRate,
+        sourceBitDepth = srcBits,
+        isLossless = liveQuality.isLossless,
+        appOutputRateHz = trackRate,
+        platformMixerRateHz = platRate,
+        dspBypassEnabled = dspBypass || usbExclusiveEnabled.value,
+        crossfadeMixing = isCrossfade,
+        speed = speed,
+        appVolume = appVol,
+        systemVolume = sysVol,
+        systemVolumeMax = maxSysVol,
+        systemVolumeFixed = isFixed,
+        dac = currentDac,
+        routedToDac = isUsbAttached,
+        routeVerified = isConfigured,
+        driftPpm = drift,
+        glitchCount = streamHealthTracker.glitchCount,
+        isPlaying = isPlaying,
+        platformBitPerfectConfigured = isConfigured,
+        usbExclusiveActive = isConfigured,
+        exclusiveClockMatched = isConfigured,
+        exclusiveHardwareVolume = false,
+        exclusiveFailureReason = null,
+        clockFallbackResampled = false,
+      )
+      signalPathReport.value = evaluateSignalPath(input)
+    }
+  }
 
   override fun onPlaybackStatsReady(
     eventTime: AnalyticsListener.EventTime,
@@ -3439,38 +3555,37 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
           playbackState = player.playbackState
         )
 
-      runCatching {
+      scope.launch(Dispatchers.IO) {
+        runCatching {
           filesDir.resolve(PERSISTENT_QUEUE_FILE).outputStream().use { fos ->
             ObjectOutputStream(fos).use { oos -> oos.writeObject(persistQueue) }
           }
           Timber.tag(TAG).d("Queue saved successfully")
-        }
-        .onFailure {
+        }.onFailure {
           Timber.tag(TAG).e(it, "Failed to save queue")
           reportException(it)
         }
 
-      runCatching {
+        runCatching {
           filesDir.resolve(PERSISTENT_AUTOMIX_FILE).outputStream().use { fos ->
             ObjectOutputStream(fos).use { oos -> oos.writeObject(persistAutomix) }
           }
           Timber.tag(TAG).d("Automix saved successfully")
-        }
-        .onFailure {
+        }.onFailure {
           Timber.tag(TAG).e(it, "Failed to save automix")
           reportException(it)
         }
 
-      runCatching {
+        runCatching {
           filesDir.resolve(PERSISTENT_PLAYER_STATE_FILE).outputStream().use { fos ->
             ObjectOutputStream(fos).use { oos -> oos.writeObject(persistPlayerState) }
           }
           Timber.tag(TAG).d("Player state saved successfully")
-        }
-        .onFailure {
+        }.onFailure {
           Timber.tag(TAG).e(it, "Failed to save player state")
           reportException(it)
         }
+      }
     } catch (e: Exception) {
       Timber.tag(TAG).e(e, "Error during queue save operation")
       reportException(e)
@@ -3508,6 +3623,9 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     playerSilenceProcessors.remove(player)
     playerStereoWideners.remove(player)
 
+    if (::usbBitPerfectOutput.isInitialized) {
+      usbBitPerfectOutput.release()
+    }
     player.release()
     discordUpdateJob?.cancel()
     super.onDestroy()

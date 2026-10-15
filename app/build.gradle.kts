@@ -33,8 +33,8 @@ android {
     applicationId = "com.fenrir.her"
     minSdk = 26
     targetSdk = 36
-    versionCode = 162
-    versionName = "1.5"
+    versionCode = 174
+    versionName = "1.5.23"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables.useSupportLibrary = true
@@ -164,7 +164,6 @@ android {
       buildConfigField("String", "ARCHITECTURE", "\"release\"")
     }
     debug {
-      applicationIdSuffix = ".debug"
       isDebuggable = true
       signingConfig = signingConfigs.getByName("debug")
       buildConfigField("String", "ARCHITECTURE", "\"debug\"")

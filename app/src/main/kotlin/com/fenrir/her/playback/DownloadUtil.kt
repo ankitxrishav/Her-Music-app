@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -124,7 +125,7 @@ constructor(
         }
 
       val targetAudioQuality = when (downloadQuality) {
-        com.fenrir.her.constants.DownloadQuality.LOSSLESS_FLAC,
+        com.fenrir.her.constants.DownloadQuality.LOSSLESS_FLAC -> com.fenrir.her.constants.AudioQuality.HI_RES_LOSSLESS
         com.fenrir.her.constants.DownloadQuality.HIGH_AAC -> com.fenrir.her.constants.AudioQuality.HIGH
         com.fenrir.her.constants.DownloadQuality.OPUS -> com.fenrir.her.constants.AudioQuality.OPUS
         com.fenrir.her.constants.DownloadQuality.MP3_320 -> com.fenrir.her.constants.AudioQuality.HIGH
@@ -139,7 +140,7 @@ constructor(
               connectivityManager = connectivityManager
             )
           }
-          .getOrThrow()
+          .getOrElse { e -> throw java.io.IOException("Failed to resolve stream: ${e.message}", e) }
       val format = playbackData.format
 
       database.query {
@@ -263,6 +264,12 @@ constructor(
       }
     }
     downloads.value = result
+
+    val initialWifiOnly = runBlocking {
+      context.dataStore.data.firstOrNull()?.get(DownloadOnWifiOnlyKey) ?: false
+    }
+    downloadManager.requirements =
+      Requirements(if (initialWifiOnly) Requirements.NETWORK_UNMETERED else Requirements.NETWORK)
 
     // Wi-Fi-only downloads: DownloadManager pauses queued downloads whenever the
     // active requirements aren't met, so flipping this pref mid-download stops it

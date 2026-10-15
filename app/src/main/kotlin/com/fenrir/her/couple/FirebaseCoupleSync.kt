@@ -47,6 +47,50 @@ data class CoupleLivePlayback(
   val senderName: String = "",
 )
 
+@kotlinx.serialization.Serializable
+data class CoupleSyncRequest(
+  val requestId: String = "",
+  val requesterRole: String = "",
+  val requesterName: String = "",
+  val songId: String = "",
+  val title: String = "",
+  val artist: String = "",
+  val thumbnailUrl: String? = null,
+  val positionMs: Long = 0L,
+  val isPlaying: Boolean = true,
+  val timestamp: Long = 0L,
+)
+
+@kotlinx.serialization.Serializable
+data class CoupleSyncResponse(
+  val requestId: String = "",
+  val responderRole: String = "",
+  val responderName: String = "",
+  val accepted: Boolean = false,
+  val timestamp: Long = 0L,
+)
+
+@kotlinx.serialization.Serializable
+data class CoupleMood(
+  val senderRole: String = "",
+  val senderName: String = "",
+  val emoji: String = "✨",
+  val moodText: String = "",
+  val timestamp: Long = 0L,
+)
+
+@kotlinx.serialization.Serializable
+data class CustomNotificationPayload(
+  val title: String = "Her Music",
+  val message: String = "",
+  val sender: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class UpdateNotificationPayload(
+  val version: String = "",
+)
+
 object FirebaseCoupleSync {
   private val brokers = listOf(
     "tcp://broker.emqx.io:1883",
@@ -85,8 +129,26 @@ object FirebaseCoupleSync {
   private val _radioFlow = MutableStateFlow<RadioBroadcastSession?>(null)
   val radioFlow: StateFlow<RadioBroadcastSession?> = _radioFlow.asStateFlow()
 
+  private val _syncRequestFlow = MutableStateFlow<CoupleSyncRequest?>(null)
+  val syncRequestFlow: StateFlow<CoupleSyncRequest?> = _syncRequestFlow.asStateFlow()
+
+  private val _syncResponseFlow = MutableStateFlow<CoupleSyncResponse?>(null)
+  val syncResponseFlow: StateFlow<CoupleSyncResponse?> = _syncResponseFlow.asStateFlow()
+
+  private val _moodFlow = MutableStateFlow<CoupleMood?>(null)
+  val moodFlow: StateFlow<CoupleMood?> = _moodFlow.asStateFlow()
+
+  fun clearSyncRequest() {
+    _syncRequestFlow.value = null
+  }
+
   fun init(context: Context) {
     appContext = context.applicationContext
+    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+      ensureConnected()
+      subscribe("her_music/broadcast/update")
+      subscribe("her_music/broadcast/notify")
+    }
   }
 
   fun hashEmail(email: String): String {
@@ -161,6 +223,8 @@ object FirebaseCoupleSync {
   private fun resubscribeAll() {
     val topics = subscribedTopics.toList()
     subscribedTopics.clear()
+    subscribe("her_music/broadcast/update")
+    subscribe("her_music/broadcast/notify")
     for (t in topics) {
       subscribe(t)
     }
@@ -238,6 +302,31 @@ object FirebaseCoupleSync {
             }
           }
         }
+        topic.startsWith("her_music/space/") && topic.endsWith("/sync_request") -> {
+          val req = jsonParser.decodeFromString<CoupleSyncRequest>(payload)
+          val spaceId = topic.split("/")[2]
+          _syncRequestFlow.value = req
+          appContext?.let { ctx ->
+            CoupleSyncNotificationManager.showSyncRequestNotification(ctx, req, spaceId)
+          }
+        }
+        topic.startsWith("her_music/space/") && topic.endsWith("/sync_response") -> {
+          val resp = jsonParser.decodeFromString<CoupleSyncResponse>(payload)
+          _syncResponseFlow.value = resp
+        }
+        topic.startsWith("her_music/space/") && topic.endsWith("/mood") -> {
+          val mood = jsonParser.decodeFromString<CoupleMood>(payload)
+          _moodFlow.value = mood
+          appContext?.let { ctx ->
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+              ctx.dataStore.edit { prefs ->
+                prefs[com.fenrir.her.constants.CouplePartnerMoodEmojiKey] = mood.emoji
+                prefs[com.fenrir.her.constants.CouplePartnerMoodTextKey] = mood.moodText
+                prefs[com.fenrir.her.constants.CouplePartnerMoodTimestampKey] = mood.timestamp
+              }
+            }
+          }
+        }
         topic.startsWith("her_music/invite/") -> {
           val inv = jsonParser.decodeFromString<CoupleInvite>(payload)
           val code = topic.split("/").last()
@@ -247,6 +336,39 @@ object FirebaseCoupleSync {
           val dev = jsonParser.decodeFromString<DeviceSyncPayload>(payload)
           deviceCache[dev.email] = dev
           _deviceSyncFlow.value = dev
+        }
+        topic == "her_music/broadcast/update" -> {
+          val version = try {
+            if (payload.trim().startsWith("{")) {
+              jsonParser.decodeFromString<UpdateNotificationPayload>(payload).version
+            } else {
+              payload.trim()
+            }
+          } catch (_: Exception) {
+            payload.trim()
+          }
+          if (version.isNotBlank()) {
+            appContext?.let { ctx ->
+              com.fenrir.her.echomusic.UpdateNotificationHelper.showUpdateNotification(ctx, version)
+            }
+          }
+        }
+        topic == "her_music/broadcast/notify" || (topic.startsWith("her_music/space/") && topic.endsWith("/notify")) -> {
+          val (title, msg, sender) = try {
+            if (payload.trim().startsWith("{")) {
+              val parsed = jsonParser.decodeFromString<CustomNotificationPayload>(payload)
+              Triple(parsed.title, parsed.message, parsed.sender)
+            } else {
+              Triple("Her Music", payload.trim(), null)
+            }
+          } catch (_: Exception) {
+            Triple("Her Music", payload.trim(), null)
+          }
+          if (msg.isNotBlank()) {
+            appContext?.let { ctx ->
+              CustomPushNotificationManager.showNotification(ctx, title, msg, sender)
+            }
+          }
         }
       }
     } catch (_: Exception) {}
@@ -443,5 +565,58 @@ object FirebaseCoupleSync {
 
   fun getLatestDeviceSync(email: String): DeviceSyncPayload? {
     return deviceCache[email]
+  }
+
+  fun subscribeSpace(spaceId: String) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return
+    subscribe("her_music/space/$clean/live")
+    subscribe("her_music/space/$clean/sync_request")
+    subscribe("her_music/space/$clean/sync_response")
+    subscribe("her_music/space/$clean/mood")
+    subscribe("her_music/space/$clean/push")
+    subscribe("her_music/space/$clean/chat")
+    subscribe("her_music/space/$clean/radio")
+    subscribe("her_music/space/$clean/notify")
+  }
+
+  suspend fun sendSyncRequest(spaceId: String, request: CoupleSyncRequest): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    subscribe("her_music/space/$clean/sync_response")
+    val topic = "her_music/space/$clean/sync_request"
+    publish(topic, jsonParser.encodeToString(request), retain = false)
+  }
+
+  suspend fun sendSyncResponse(spaceId: String, response: CoupleSyncResponse): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/sync_response"
+    publish(topic, jsonParser.encodeToString(response), retain = false)
+  }
+
+  suspend fun broadcastMood(spaceId: String, mood: CoupleMood): Boolean = withContext(Dispatchers.IO) {
+    val clean = spaceId.trim()
+    if (clean.isBlank()) return@withContext false
+    val topic = "her_music/space/$clean/mood"
+    subscribe(topic)
+    _moodFlow.value = mood
+    publish(topic, jsonParser.encodeToString(mood), retain = true)
+  }
+
+  suspend fun sendCustomNotification(
+    spaceId: String? = null,
+    title: String,
+    message: String,
+    sender: String? = null
+  ): Boolean = withContext(Dispatchers.IO) {
+    val payload = jsonParser.encodeToString(CustomNotificationPayload(title, message, sender))
+    val topic = if (!spaceId.isNullOrBlank()) "her_music/space/${spaceId.trim()}/notify" else "her_music/broadcast/notify"
+    publish(topic, payload)
+  }
+
+  suspend fun broadcastUpdateNotification(version: String): Boolean = withContext(Dispatchers.IO) {
+    val payload = jsonParser.encodeToString(UpdateNotificationPayload(version))
+    publish("her_music/broadcast/update", payload, retain = true)
   }
 }

@@ -1,11 +1,17 @@
 package com.fenrir.her.playback
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.datastore.preferences.core.edit
 import androidx.documentfile.provider.DocumentFile
@@ -17,6 +23,7 @@ import com.fenrir.her.constants.DownloadQuality
 import com.fenrir.her.constants.DownloadQualityKey
 import com.fenrir.her.constants.DownloadStructure
 import com.fenrir.her.constants.DownloadStructureKey
+import com.fenrir.her.constants.EmbedLyricsOnDownloadKey
 import com.fenrir.her.constants.ExportProgressKey
 import com.fenrir.her.constants.ExportedSongIdsKey
 import com.fenrir.her.constants.ExportingSongIdsKey
@@ -41,6 +48,30 @@ class AudioExportService : Service() {
   private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val httpClient = OkHttpClient()
   private val activeExports = java.util.concurrent.atomic.AtomicInteger(0)
+  private lateinit var notificationManager: NotificationManager
+
+  override fun onCreate() {
+    super.onCreate()
+    notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    createNotificationChannel()
+    serviceScope.launch {
+      dataStore.edit { preferences ->
+        preferences.remove(ExportingSongIdsKey)
+        preferences.remove(ExportProgressKey)
+      }
+    }
+  }
+
+  private fun createNotificationChannel() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val channel = NotificationChannel(
+        CHANNEL_ID,
+        "Audio Export",
+        NotificationManager.IMPORTANCE_LOW
+      )
+      notificationManager.createNotificationChannel(channel)
+    }
+  }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val songId = intent?.getStringExtra(EXTRA_SONG_ID) ?: return START_NOT_STICKY
@@ -48,8 +79,21 @@ class AudioExportService : Service() {
     val songArtist = intent.getStringExtra(EXTRA_SONG_ARTIST).orEmpty()
     val songAlbum = intent.getStringExtra(EXTRA_SONG_ALBUM).orEmpty()
     val artworkUrl = intent.getStringExtra(EXTRA_ARTWORK_URL).orEmpty()
-    val targetDirectoryUri =
-      intent.getStringExtra(EXTRA_TARGET_DIRECTORY_URI) ?: return START_NOT_STICKY
+    val targetDirectoryUri = intent.getStringExtra(EXTRA_TARGET_DIRECTORY_URI).orEmpty()
+
+    val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+      .setContentTitle("Exporting audio")
+      .setContentText(songTitle.ifBlank { "Export in progress..." })
+      .setSmallIcon(android.R.drawable.stat_sys_download)
+      .setOngoing(true)
+      .setProgress(100, 0, true)
+      .build()
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    } else {
+      startForeground(NOTIFICATION_ID, notification)
+    }
 
     activeExports.incrementAndGet()
     serviceScope.launch {
@@ -80,18 +124,14 @@ class AudioExportService : Service() {
     val quality = prefs[DownloadQualityKey]?.let { runCatching { DownloadQuality.valueOf(it) }.getOrNull() } ?: DownloadQuality.YOUTUBE
     val structure = prefs[DownloadStructureKey]?.let { runCatching { DownloadStructure.valueOf(it) }.getOrNull() } ?: DownloadStructure.FLAT
 
-    val (extension, mimeType) = when (quality) {
-      DownloadQuality.LOSSLESS_FLAC -> "flac" to "audio/flac"
-      DownloadQuality.HIGH_AAC -> "m4a" to "audio/mp4"
-      DownloadQuality.OPUS -> "opus" to "audio/opus"
-      DownloadQuality.MP3_320, DownloadQuality.YOUTUBE -> "mp3" to "audio/mpeg"
-    }
-
-    val tempSourceFile = File.createTempFile("export_source_", ".m4a", cacheDir)
+    val tempSourceFile = File.createTempFile("export_source_", ".tmp", cacheDir)
     val tempArtworkFile = File.createTempFile("export_cover_", ".jpg", cacheDir)
-    val tempOutputFile = File.createTempFile("export_result_", ".$extension", cacheDir)
 
     try {
+      if (cacheDir.freeSpace < 20 * 1024 * 1024L) {
+        throw java.io.IOException("Insufficient disk storage")
+      }
+
       val connectivityManager =
         getSystemService<ConnectivityManager>() ?: error("No connectivity manager")
       val playbackData =
@@ -102,41 +142,93 @@ class AudioExportService : Service() {
           )
           .getOrThrow()
 
-      val year = fetchSongYear(songId)
-      downloadStream(playbackData, tempSourceFile) { percent ->
-        updateExportProgress(songId, percent)
+      val isWebm = playbackData.format.mimeType.contains("webm") || playbackData.format.mimeType.contains("opus")
+      val (extension, mimeType) = when (quality) {
+        DownloadQuality.MP3_320 -> "mp3" to "audio/mpeg"
+        DownloadQuality.HIGH_AAC -> "m4a" to "audio/mp4"
+        DownloadQuality.OPUS -> "opus" to "audio/opus"
+        DownloadQuality.LOSSLESS_FLAC -> "flac" to "audio/flac"
+        DownloadQuality.YOUTUBE -> if (isWebm) "opus" to "audio/opus" else "m4a" to "audio/mp4"
       }
-      val artworkDownloaded = downloadArtwork(artworkUrl, tempArtworkFile)
-      convertToTargetFormat(
-        sourceFile = tempSourceFile,
-        outputFile = tempOutputFile,
-        songTitle = songTitle,
-        songArtist = songArtist,
-        songAlbum = songAlbum,
-        year = year,
-        artworkFile = if (artworkDownloaded) tempArtworkFile else null,
-        quality = quality,
-      )
-      writeOutputFile(
-        safeTitle = safeTitle,
-        targetDirectoryUri = targetDirectoryUri,
-        sourceFile = tempOutputFile,
-        extension = extension,
-        mimeType = mimeType,
-        songArtist = songArtist,
-        songAlbum = songAlbum,
-        structure = structure,
-      )
-      addExportedSongId(songId)
+
+      val tempOutputFile = File.createTempFile("export_result_", ".$extension", cacheDir)
+
+      try {
+        val year = fetchSongYear(songId)
+        downloadStream(playbackData, tempSourceFile) { percent ->
+          updateExportProgress(songId, percent)
+        }
+        val artworkDownloaded = downloadArtwork(artworkUrl, tempArtworkFile)
+        convertToTargetFormat(
+          sourceFile = tempSourceFile,
+          outputFile = tempOutputFile,
+          songTitle = songTitle,
+          songArtist = songArtist,
+          songAlbum = songAlbum,
+          year = year,
+          artworkFile = if (artworkDownloaded) tempArtworkFile else null,
+          quality = quality,
+          isWebm = isWebm,
+        )
+        var lyricsText: String? = null
+        if (dataStore.data.first()[EmbedLyricsOnDownloadKey] ?: true) {
+          runCatching {
+            val entryPoint = dagger.hilt.android.EntryPointAccessors.fromApplication(
+              applicationContext,
+              com.fenrir.her.di.LyricsHelperEntryPoint::class.java
+            )
+            val db = entryPoint.database()
+            val cached = db.lyrics(songId).first()
+            if (cached != null && cached.lyrics.isNotBlank() && cached.lyrics != com.fenrir.her.db.entities.LyricsEntity.LYRICS_NOT_FOUND) {
+              lyricsText = cached.lyrics
+            } else {
+              val lyricsHelper = entryPoint.lyricsHelper()
+              val meta = com.fenrir.her.models.MediaMetadata(
+                id = songId,
+                title = songTitle,
+                artists = listOf(com.fenrir.her.models.MediaMetadata.Artist(id = null, name = songArtist)),
+                duration = 0,
+                thumbnailUrl = artworkUrl
+              )
+              val fetched = lyricsHelper.getLyrics(meta)
+              if (!fetched.lyrics.isNullOrBlank() && fetched.lyrics != com.fenrir.her.db.entities.LyricsEntity.LYRICS_NOT_FOUND) {
+                lyricsText = fetched.lyrics
+                db.upsert(com.fenrir.her.db.entities.LyricsEntity(id = songId, lyrics = fetched.lyrics!!, provider = fetched.providerName ?: "Unknown"))
+              }
+            }
+          }
+        }
+        writeOutputFile(
+          safeTitle = safeTitle,
+          targetDirectoryUri = targetDirectoryUri,
+          sourceFile = tempOutputFile,
+          extension = extension,
+          mimeType = mimeType,
+          songArtist = songArtist,
+          songAlbum = songAlbum,
+          structure = structure,
+          lyricsText = lyricsText,
+        )
+        addExportedSongId(songId)
+      } finally {
+        tempOutputFile.delete()
+      }
     } catch (e: Exception) {
       Timber.e(e, "Export failed for songId=$songId")
+      val failNotification = NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle("Export failed")
+        .setContentText("$songTitle: ${e.message ?: "Failed"}")
+        .setSmallIcon(android.R.drawable.stat_notify_error)
+        .setAutoCancel(true)
+        .build()
+      notificationManager.notify(songId.hashCode(), failNotification)
     } finally {
       tempSourceFile.delete()
       tempArtworkFile.delete()
-      tempOutputFile.delete()
       clearExportProgress(songId)
       removeExportingSongId(songId)
       if (activeExports.decrementAndGet() <= 0) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
       }
     }
@@ -261,6 +353,7 @@ class AudioExportService : Service() {
     year: Int?,
     artworkFile: File?,
     quality: DownloadQuality,
+    isWebm: Boolean,
   ) {
     val command =
       buildFfmpegCommand(
@@ -272,6 +365,7 @@ class AudioExportService : Service() {
         year = year,
         coverPath = artworkFile?.absolutePath,
         quality = quality,
+        isWebm = isWebm,
       )
     val session = FFmpegKit.execute(command)
     val returnCode = session.returnCode
@@ -292,10 +386,21 @@ class AudioExportService : Service() {
     songArtist: String,
     songAlbum: String,
     structure: DownloadStructure,
+    lyricsText: String? = null,
   ) {
-    val uri = Uri.parse(targetDirectoryUri)
+    val effectiveDirUri = if (targetDirectoryUri.isBlank()) {
+      val defaultMusic = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC)
+      val herDir = File(defaultMusic, "Her")
+      if (!herDir.exists()) herDir.mkdirs()
+      Uri.fromFile(herDir).toString()
+    } else {
+      targetDirectoryUri
+    }
+    val uri = Uri.parse(effectiveDirUri)
     val artistName = sanitizeTitle(songArtist.ifBlank { "Unknown Artist" })
     val albumName = sanitizeTitle(songAlbum.ifBlank { "Unknown Album" })
+    val rawBaseName = if (artistName != "Unknown Artist" && songArtist.isNotBlank()) "$artistName - $safeTitle" else safeTitle
+    val baseName = rawBaseName.take(120).trimEnd('.', ' ')
 
     if (uri.scheme == "file") {
       val baseFolder = File(uri.path ?: error("Invalid export directory"))
@@ -305,7 +410,23 @@ class AudioExportService : Service() {
         baseFolder
       }
       if (!folder.exists() && !folder.mkdirs()) error("Unable to create export directory")
-      sourceFile.copyTo(File(folder, "$safeTitle.$extension"), overwrite = true)
+      var targetFile = File(folder, "$baseName.$extension")
+      var index = 2
+      while (targetFile.exists()) {
+        targetFile = File(folder, "$baseName ($index).$extension")
+        index++
+      }
+      val finalBaseName = targetFile.nameWithoutExtension
+      sourceFile.copyTo(targetFile, overwrite = false)
+      if (!lyricsText.isNullOrBlank()) {
+        runCatching { File(folder, "$finalBaseName.lrc").writeText(lyricsText) }
+      }
+      android.media.MediaScannerConnection.scanFile(
+        this,
+        arrayOf(targetFile.absolutePath),
+        arrayOf(mimeType),
+        null
+      )
     } else {
       val rootDir =
         DocumentFile.fromTreeUri(this, uri) ?: error("Export directory unavailable")
@@ -315,11 +436,28 @@ class AudioExportService : Service() {
       } else {
         rootDir
       }
+      var fileName = "$baseName.$extension"
+      var index = 2
+      while (targetDir.findFile(fileName) != null) {
+        fileName = "$baseName ($index).$extension"
+        index++
+      }
       val outputFile =
-        targetDir.createFile(mimeType, "$safeTitle.$extension")
+        targetDir.createFile(mimeType, fileName)
           ?: error("Unable to create output file")
       sourceFile.inputStream().use { input ->
-        contentResolver.openOutputStream(outputFile.uri, "w")!!.use { input.copyTo(it) }
+        contentResolver.openOutputStream(outputFile.uri, "wt")!!.use { input.copyTo(it) }
+      }
+      if (!lyricsText.isNullOrBlank()) {
+        val lrcName = fileName.substringBeforeLast(".") + ".lrc"
+        runCatching {
+          val lrcFile = targetDir.createFile("text/plain", lrcName)
+          if (lrcFile != null) {
+            contentResolver.openOutputStream(lrcFile.uri, "wt")?.use {
+              it.write(lyricsText.toByteArray(Charsets.UTF_8))
+            }
+          }
+        }
       }
     }
   }
@@ -406,6 +544,8 @@ class AudioExportService : Service() {
   companion object {
     private const val PARALLEL_PARTS = 4
     private const val DOWNLOAD_BUFFER_SIZE = 128 * 1024
+    private const val CHANNEL_ID = "audio_export_channel"
+    private const val NOTIFICATION_ID = 2001
     private const val EXTRA_SONG_ID = "extra_song_id"
     private const val EXTRA_SONG_TITLE = "extra_song_title"
     private const val EXTRA_SONG_ARTIST = "extra_song_artist"
@@ -431,14 +571,14 @@ class AudioExportService : Service() {
           putExtra(EXTRA_ARTWORK_URL, artworkUrl)
           putExtra(EXTRA_TARGET_DIRECTORY_URI, targetDirectoryUri)
         }
-      context.startService(intent)
+      ContextCompat.startForegroundService(context, intent)
     }
 
-    private fun sanitizeTitle(title: String): String =
-      title.replace(Regex("[\\\\/:*?\"<>|]"), "_").replace(Regex("\\s+"), " ").trim().ifBlank {
-        "song_${System.currentTimeMillis()}"
-      }
-
+    private fun sanitizeTitle(title: String): String {
+      val invalid = setOf('\\', '/', ':', '*', '?', '"', '<', '>', '|', '\n', '\r', '\t')
+      val clean = title.map { if (it in invalid) '_' else it }.joinToString("").trim().trim('.', ' ')
+      return clean.ifBlank { "song_${System.currentTimeMillis()}" }
+    }
     private fun buildFfmpegCommand(
       inputPath: String,
       outputPath: String,
@@ -448,6 +588,7 @@ class AudioExportService : Service() {
       year: Int?,
       coverPath: String?,
       quality: DownloadQuality,
+      isWebm: Boolean,
     ): String {
       val escapedInput = inputPath.ffmpegEscape()
       val escapedOutput = outputPath.ffmpegEscape()
@@ -457,17 +598,36 @@ class AudioExportService : Service() {
       val yearMeta = year?.toString()?.ffmpegEscape()
       val dateFlags =
         if (yearMeta != null) " -metadata date='$yearMeta' -metadata year='$yearMeta'" else ""
-      val codecFlags = when (quality) {
-        DownloadQuality.LOSSLESS_FLAC -> "-c:a flac"
-        DownloadQuality.HIGH_AAC -> "-c:a aac -b:a 320k"
-        DownloadQuality.OPUS -> "-c:a libopus -b:a 160k"
-        DownloadQuality.MP3_320, DownloadQuality.YOUTUBE -> "-c:a libmp3lame -b:a 320k -id3v2_version 3"
-      }
-      return if (coverPath != null && (quality == DownloadQuality.MP3_320 || quality == DownloadQuality.YOUTUBE || quality == DownloadQuality.LOSSLESS_FLAC)) {
-        val escapedCover = coverPath.ffmpegEscape()
-        "-y -i '$escapedInput' -i '$escapedCover' -map 0:a -map 1:v -c:v mjpeg -disposition:v attached_pic $codecFlags -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags -metadata:s:v title='Album cover' -metadata:s:v comment='Cover (front)' '$escapedOutput'"
-      } else {
-        "-y -i '$escapedInput' $codecFlags -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+
+      return when (quality) {
+        DownloadQuality.MP3_320 -> {
+          val codecFlags = "-c:a libmp3lame -b:a 320k -id3v2_version 3"
+          if (coverPath != null) {
+            val escapedCover = coverPath.ffmpegEscape()
+            "-y -i '$escapedInput' -i '$escapedCover' -map 0:a -map 1:v -c:v mjpeg -disposition:v attached_pic $codecFlags -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags -metadata:s:v title='Album cover' '$escapedOutput'"
+          } else {
+            "-y -i '$escapedInput' $codecFlags -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+          }
+        }
+        DownloadQuality.LOSSLESS_FLAC -> {
+          val flacCodec = "-c:a flac -compression_level 8"
+          if (coverPath != null) {
+            val escapedCover = coverPath.ffmpegEscape()
+            "-y -i '$escapedInput' -i '$escapedCover' -map 0:a -map 1:v -c:v mjpeg -disposition:v attached_pic $flacCodec -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+          } else {
+            "-y -i '$escapedInput' $flacCodec -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+          }
+        }
+        DownloadQuality.HIGH_AAC -> {
+          if (!isWebm) {
+            "-y -i '$escapedInput' -c:a copy -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+          } else {
+            "-y -i '$escapedInput' -c:a aac -b:a 256k -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+          }
+        }
+        else -> {
+          "-y -i '$escapedInput' -c:a copy -metadata title='$titleMeta' -metadata artist='$artistMeta' -metadata album='$albumMeta'$dateFlags '$escapedOutput'"
+        }
       }
     }
 

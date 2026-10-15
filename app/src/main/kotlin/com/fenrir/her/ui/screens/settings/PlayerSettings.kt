@@ -20,11 +20,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.fenrir.her.LocalPlayerConnection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -136,7 +138,15 @@ fun PlayerSettings(
     rememberPreference(key = com.fenrir.her.constants.DataSaverEnabledKey, defaultValue = false)
 
   val (enableExportAsMp3, onEnableExportAsMp3Change) =
-    rememberPreference(key = EnableExportAsMp3Key, defaultValue = false)
+    rememberPreference(key = EnableExportAsMp3Key, defaultValue = true)
+  val (showTogetherPill, onShowTogetherPillChange) =
+    rememberPreference(key = com.fenrir.her.constants.ShowTogetherPillKey, defaultValue = true)
+  val (enableVinylSpin, onEnableVinylSpinChange) =
+    rememberPreference(key = com.fenrir.her.constants.EnableVinylSpinKey, defaultValue = true)
+  val (playerHaptics, onPlayerHapticsChange) =
+    rememberPreference(key = com.fenrir.her.constants.PlayerHapticFeedbackKey, defaultValue = true)
+  val (showCodecOnPlayer, onShowCodecOnPlayerChange) =
+    rememberPreference(key = com.fenrir.her.constants.ShowCodecOnPlayerKey, defaultValue = true)
 
   val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -204,6 +214,22 @@ fun PlayerSettings(
       defaultValue = true
     )
 
+  val playerConnection = LocalPlayerConnection.current
+  val usbExclusiveEnabled = playerConnection?.usbExclusiveEnabled?.collectAsState()?.value ?: false
+  val dacState = playerConnection?.usbDacMonitor?.state?.collectAsState()?.value
+  var showSignalPathDialog by remember { mutableStateOf(false) }
+
+  if (showSignalPathDialog && playerConnection != null) {
+    val report by playerConnection.signalPathReport.collectAsState()
+    val needsPerm = dacState?.dac?.hasUsbPeripheral == true && dacState.dac?.usbPermissionGranted == false
+    com.fenrir.her.ui.component.SignalPathDialog(
+      report = report,
+      needsUsbPermission = needsPerm,
+      onRequestUsbAccess = { playerConnection.usbDacMonitor.requestPermission() },
+      onDismiss = { showSignalPathDialog = false },
+    )
+  }
+
   if (showAudioQualityDialog) {
     EnumDialog(
       onDismiss = { showAudioQualityDialog = false },
@@ -223,7 +249,7 @@ fun PlayerSettings(
       ),
       valueText = {
         when (it) {
-          AudioQuality.HI_RES_LOSSLESS -> "Hi-Res / Lossless (FLAC 24-bit)"
+          AudioQuality.HI_RES_LOSSLESS -> "Best available (up to ~256-320 kbps)"
           AudioQuality.HIGH -> "High (256k-320kbps)"
           AudioQuality.AUTO -> "Auto / Adaptive"
           AudioQuality.MEDIUM -> "Standard (160kbps)"
@@ -233,7 +259,7 @@ fun PlayerSettings(
       },
       valueDescription = {
         when (it) {
-          AudioQuality.HI_RES_LOSSLESS -> "Bit-perfect streaming and highest available bitrate audio."
+          AudioQuality.HI_RES_LOSSLESS -> "Highest available bitrate stream from source."
           AudioQuality.HIGH -> "Flagship quality for high-end headphones and DACs."
           AudioQuality.AUTO -> "Adapts automatically based on network speed and metered connections."
           AudioQuality.MEDIUM -> "Standard fidelity for everyday mobile listening."
@@ -262,11 +288,11 @@ fun PlayerSettings(
       ),
       valueText = {
         when (it) {
-          DownloadQuality.LOSSLESS_FLAC -> "Lossless FLAC (Hi-Res / CD)"
+          DownloadQuality.LOSSLESS_FLAC -> "Original / Best (Remuxed, zero loss)"
           DownloadQuality.HIGH_AAC -> "High Quality AAC (256-320 kbps)"
           DownloadQuality.OPUS -> "Opus (160 kbps)"
-          DownloadQuality.MP3_320 -> "MP3 (320 kbps Extreme)"
-          DownloadQuality.YOUTUBE -> "YouTube Music (Default Adaptive)"
+          DownloadQuality.MP3_320 -> "MP3 Compatibility (320 kbps)"
+          DownloadQuality.YOUTUBE -> "Original (Default Adaptive)"
         }
       }
     )
@@ -439,6 +465,90 @@ fun PlayerSettings(
 
     Material3SettingsGroup(
       scrollState = scrollState,
+      title = "Player Customization",
+      items =
+        buildList {
+          add(
+            Material3SettingsItem(
+              icon = painterResource(R.drawable.favorite),
+              title = { Text("Together Pill on Player") },
+              description = { Text("Display the 'Her is listening...' pill on the music player") },
+              trailingContent = {
+                Switch(
+                  checked = showTogetherPill,
+                  onCheckedChange = onShowTogetherPillChange,
+                )
+              },
+              onClick = { onShowTogetherPillChange(!showTogetherPill) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              icon = painterResource(R.drawable.album),
+              title = { Text("Spinning Vinyl Record") },
+              description = { Text("Smooth vinyl record sliding and spinning animation while playing") },
+              trailingContent = {
+                Switch(
+                  checked = enableVinylSpin,
+                  onCheckedChange = onEnableVinylSpinChange,
+                )
+              },
+              onClick = { onEnableVinylSpinChange(!enableVinylSpin) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              icon = painterResource(R.drawable.vibration),
+              title = { Text("Controls Haptic Feedback") },
+              description = { Text("Gently vibrate phone when tapping play, pause, or skip buttons") },
+              trailingContent = {
+                Switch(
+                  checked = playerHaptics,
+                  onCheckedChange = onPlayerHapticsChange,
+                )
+              },
+              onClick = { onPlayerHapticsChange(!playerHaptics) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              icon = painterResource(R.drawable.graphic_eq),
+              title = { Text("Real-time Codec & Quality Badge") },
+              description = { Text("Display active stream format (FLAC / AAC / Opus) and bitrate") },
+              trailingContent = {
+                Switch(
+                  checked = showCodecOnPlayer,
+                  onCheckedChange = onShowCodecOnPlayerChange,
+                )
+              },
+              onClick = { onShowCodecOnPlayerChange(!showCodecOnPlayer) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              icon = painterResource(R.drawable.download),
+              title = { Text("System Audio Downloads (/Music/Her)") },
+              description = { Text("Enable downloading lossless FLAC and AAC audio files to system storage") },
+              trailingContent = {
+                Switch(
+                  checked = enableExportAsMp3,
+                  onCheckedChange = onEnableExportAsMp3Change,
+                )
+              },
+              onClick = { onEnableExportAsMp3Change(!enableExportAsMp3) }
+            )
+          )
+        }
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    Material3SettingsGroup(
+      scrollState = scrollState,
       title = stringResource(R.string.player),
       items =
         buildList {
@@ -450,7 +560,7 @@ fun PlayerSettings(
               description = {
                 Text(
                   when (audioQuality) {
-                    AudioQuality.HI_RES_LOSSLESS -> "Hi-Res / Lossless (FLAC 24-bit)"
+                    AudioQuality.HI_RES_LOSSLESS -> "Best available (up to ~256-320 kbps)"
                     AudioQuality.HIGH -> "High (256k-320kbps)"
                     AudioQuality.AUTO -> "Auto / Adaptive"
                     AudioQuality.MEDIUM -> "Standard (160kbps)"
@@ -465,17 +575,73 @@ fun PlayerSettings(
 
           add(
             Material3SettingsItem(
+              isHighlighted = false,
+              icon = painterResource(R.drawable.sync),
+              title = { Text("Bit-Perfect Mode") },
+              description = {
+                Text(
+                  if (usbExclusiveEnabled) "DSP bypassed; USB DACs use exclusive bit-perfect stream (gold badge when clock matches)"
+                  else "Bypass DSP and stream untouched bit-perfect audio directly to DAC"
+                )
+              },
+              trailingContent = {
+                Switch(
+                  checked = usbExclusiveEnabled,
+                  onCheckedChange = { playerConnection?.setUsbBitPerfectEnabled(it) },
+                )
+              },
+              onClick = { playerConnection?.setUsbBitPerfectEnabled(!usbExclusiveEnabled) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              isHighlighted = false,
+              icon = painterResource(R.drawable.ic_launcher_nobg),
+              title = { Text("USB Exclusive Output") },
+              description = {
+                Text(
+                  if (usbExclusiveEnabled) "Direct usbdevfs to DAC • Bit-Perfect engages this automatically"
+                  else "Off • Direct bit-perfect USB stream bypassing Android audio mixer"
+                )
+              },
+              trailingContent = {
+                Switch(
+                  checked = usbExclusiveEnabled,
+                  onCheckedChange = { playerConnection?.setUsbBitPerfectEnabled(it) },
+                )
+              },
+              onClick = { playerConnection?.setUsbBitPerfectEnabled(!usbExclusiveEnabled) }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
+              isHighlighted = false,
+              icon = painterResource(R.drawable.graphic_eq),
+              title = { Text("Signal Path & Diagnostics") },
+              description = {
+                val dac = dacState?.dac
+                val dacName = dac?.name ?: "No USB DAC detected"
+                Text("$dacName • View sample rate, clock sync, and latency drift")
+              },
+              onClick = { showSignalPathDialog = true }
+            )
+          )
+
+          add(
+            Material3SettingsItem(
               isHighlighted = (highlightKey == stringResource(R.string.download_quality_title)),
               icon = painterResource(R.drawable.download),
               title = { Text(stringResource(R.string.download_quality_title)) },
               description = {
                 Text(
                   when (downloadQuality) {
-                    DownloadQuality.LOSSLESS_FLAC -> "Lossless FLAC (Hi-Res / CD)"
+                    DownloadQuality.LOSSLESS_FLAC -> "Original / Best (Remuxed, zero loss)"
                     DownloadQuality.HIGH_AAC -> "High Quality AAC (256-320 kbps)"
                     DownloadQuality.OPUS -> "Opus (160 kbps)"
-                    DownloadQuality.MP3_320 -> "MP3 (320 kbps Extreme)"
-                    DownloadQuality.YOUTUBE -> "YouTube Music (Default Adaptive)"
+                    DownloadQuality.MP3_320 -> "MP3 Compatibility (320 kbps)"
+                    DownloadQuality.YOUTUBE -> "Original (Default Adaptive)"
                   }
                 )
               },

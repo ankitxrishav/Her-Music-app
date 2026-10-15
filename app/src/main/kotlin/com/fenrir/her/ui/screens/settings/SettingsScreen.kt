@@ -428,6 +428,15 @@ fun SettingsScreen(
       if (systemGroup.isNotEmpty()) {
         Material3SettingsGroup(scrollState = scrollState, items = systemGroup)
       }
+
+      Spacer(modifier = Modifier.height(16.dp))
+      Text(
+        text = "builded for her",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+      )
     }
 
     Spacer(modifier = Modifier.height(50.dp))

@@ -46,6 +46,7 @@ import com.fenrir.her.R
 import com.fenrir.her.auth.CoupleAuthGuard
 import com.fenrir.her.playback.PlayerConnection
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private fun formatTime(ms: Long): String {
   val s = (ms / 1000).coerceAtLeast(0L)
@@ -253,72 +254,118 @@ fun CouplePlayTogetherCard(
         }
       }
 
-      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
-          onClick = {
-            if (isLiveSyncing) {
-              CouplePlaybackSyncManager.stopLiveSyncFollow()
-              Toast.makeText(context, "Real-time sync disconnected", Toast.LENGTH_SHORT).show()
-            } else {
+      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (isLiveSyncing) {
+          Button(
+            onClick = {
+              CouplePlaybackSyncManager.disconnectSync()
+              Toast.makeText(context, "Disjoined from sync", Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC2185B))
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.connect_people),
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+              tint = Color.White
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "Disjoin / Stop Sync 💕",
+              color = Color.White,
+              fontWeight = FontWeight.Bold
+            )
+          }
+        } else {
+          if (live != null && live.songId.isNotBlank()) {
+            Button(
+              onClick = {
+                if (spaceId.isBlank()) {
+                  Toast.makeText(context, "Pair with your partner first 💕", Toast.LENGTH_SHORT).show()
+                } else {
+                  CouplePlaybackSyncManager.startLiveSyncFollow(
+                    scope = scope,
+                    spaceId = spaceId,
+                    myRole = role,
+                    playerConnection = playerConnection,
+                    customUrl = customFirebaseUrl
+                  )
+                  Toast.makeText(context, "Synced to $partnerName's song 💕", Toast.LENGTH_SHORT).show()
+                }
+              },
+              modifier = Modifier.fillMaxWidth(),
+              shape = RoundedCornerShape(16.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4081))
+            ) {
+              Icon(
+                painter = painterResource(R.drawable.connect_people),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = Color.White
+              )
+              Spacer(Modifier.width(8.dp))
+              Text(
+                text = "Tune in & Sync with $partnerName 💕",
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+
+          val meta = playerConnection?.service?.currentMediaMetadata?.value
+          Button(
+            onClick = {
               if (spaceId.isBlank()) {
                 Toast.makeText(context, "Pair with your partner first 💕", Toast.LENGTH_SHORT).show()
+              } else if (meta == null) {
+                Toast.makeText(context, "Play a song first to invite $partnerName 🎵", Toast.LENGTH_SHORT).show()
               } else {
-                CouplePlaybackSyncManager.startLiveSyncFollow(
-                  scope = scope,
-                  spaceId = spaceId,
-                  myRole = role,
-                  playerConnection = playerConnection,
-                  customUrl = customFirebaseUrl
+                val req = CoupleSyncRequest(
+                  requestId = System.currentTimeMillis().toString(),
+                  requesterRole = role.name,
+                  requesterName = if (role == CoupleAuthGuard.CoupleRole.HER) "Her" else "Him",
+                  songId = meta.id,
+                  title = meta.title,
+                  artist = meta.artists.joinToString { it.name },
+                  thumbnailUrl = meta.thumbnailUrl,
+                  positionMs = playerConnection.player.currentPosition.coerceAtLeast(0L),
+                  isPlaying = playerConnection.player.isPlaying,
+                  timestamp = System.currentTimeMillis()
                 )
-                Toast.makeText(context, "Real-time time-sync active with $partnerName 💕", Toast.LENGTH_SHORT).show()
+                scope.launch {
+                  FirebaseCoupleSync.sendSyncRequest(spaceId, req)
+                  CouplePlaybackSyncManager.startBroadcaster(
+                    scope = scope,
+                    spaceId = spaceId,
+                    role = role,
+                    myName = req.requesterName,
+                    playerConnection = playerConnection,
+                    customUrl = customFirebaseUrl
+                  )
+                }
+                Toast.makeText(context, "Invitation sent to $partnerName 💕", Toast.LENGTH_SHORT).show()
               }
-            }
-          },
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(16.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = if (isLiveSyncing) Color(0xFFC2185B) else Color(0xFFFF4081)
-          )
-        ) {
-          Icon(
-            painter = painterResource(R.drawable.connect_people),
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = Color.White
-          )
-          Spacer(Modifier.width(8.dp))
-          Text(
-            text = if (isLiveSyncing) "🟢 Connected in Real-Time Sync (Stop)" else "💞 Option 1: Real-Time Time-Sync with $partnerName",
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-          )
-        }
-
-        OutlinedButton(
-          onClick = {
-            val songId = live?.songId
-            if (songId.isNullOrBlank()) {
-              Toast.makeText(context, "No song currently playing by $partnerName", Toast.LENGTH_SHORT).show()
-            } else {
-              CouplePlaybackSyncManager.playPartnerSongNow(playerConnection, songId)
-              Toast.makeText(context, "Playing ${live.title} 💕", Toast.LENGTH_SHORT).show()
-            }
-          },
-          modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(16.dp),
-          enabled = live != null && live.songId.isNotBlank()
-        ) {
-          Icon(
-            painter = painterResource(R.drawable.play),
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.primary
-          )
-          Spacer(Modifier.width(8.dp))
-          Text(
-            text = "▶ Option 2: Play ${if (role == CoupleAuthGuard.CoupleRole.HER) "His" else "Her"} Song Independently",
-            fontWeight = FontWeight.SemiBold
-          )
+            },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary
+            )
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.favorite),
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+              tint = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "Invite $partnerName to My Song 💕",
+              fontWeight = FontWeight.Bold
+            )
+          }
         }
       }
     }

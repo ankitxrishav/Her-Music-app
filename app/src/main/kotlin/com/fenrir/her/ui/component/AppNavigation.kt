@@ -75,6 +75,9 @@ fun AppNavigationRail(
   shuffleEnabled: Boolean = false,
   shuffleIconRes: Int? = null,
   shuffleContentDescription: String = "",
+  onSettingsClick: (() -> Unit)? = null,
+  settingsIconRes: Int? = R.drawable.settings,
+  settingsContentDescription: String = "",
   onAiHubClick: (() -> Unit)? = null,
   aiHubIconRes: Int? = null,
   aiHubContentDescription: String = ""
@@ -83,7 +86,7 @@ fun AppNavigationRail(
   val haptics = LocalHapticFeedback.current
   val viewConfiguration = LocalViewConfiguration.current
   var showMoreOptionsSheet by rememberSaveable { mutableStateOf(false) }
-  val hasMoreOptions = (onShuffleClick != null && shuffleIconRes != null) || onAiHubClick != null
+  val hasMoreOptions = (onShuffleClick != null && shuffleIconRes != null) || onSettingsClick != null || onAiHubClick != null
 
   NavigationRail(modifier = modifier, containerColor = containerColor) {
     Spacer(modifier = Modifier.weight(1f))
@@ -212,14 +215,22 @@ fun AppNavigationRail(
                 )
               }
 
-              if (onAiHubClick != null && aiHubIconRes != null) {
+              val effectiveSettingsClick = onSettingsClick ?: onAiHubClick
+              val effectiveSettingsIcon = settingsIconRes ?: aiHubIconRes ?: R.drawable.settings
+              val effectiveSettingsTitle = when {
+                settingsContentDescription.isNotBlank() -> settingsContentDescription
+                aiHubContentDescription.isNotBlank() && aiHubContentDescription != stringResource(R.string.ai_lyrics_translation) -> aiHubContentDescription
+                else -> stringResource(R.string.settings)
+              }
+
+              if (effectiveSettingsClick != null) {
                 add(
                   Material3SettingsItem(
-                    title = { Text(aiHubContentDescription) },
-                    icon = painterResource(aiHubIconRes),
+                    title = { Text(effectiveSettingsTitle) },
+                    icon = painterResource(effectiveSettingsIcon),
                     onClick = {
                       showMoreOptionsSheet = false
-                      onAiHubClick()
+                      effectiveSettingsClick()
                     }
                   )
                 )

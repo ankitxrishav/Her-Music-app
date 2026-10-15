@@ -237,7 +237,7 @@ fun SettingDialoge(
         horizontalArrangement = Arrangement.Center
       ) {
         Text(
-          text = "Just vibe to the music — the dev's got the rest handled.",
+          text = "builded for her",
           style = MaterialTheme.typography.bodySmall,
           color = onSecondaryColor,
           modifier = Modifier.padding(4.dp),

@@ -82,35 +82,36 @@ object LocalFileDownloader {
         }
         requestBuilder.header("Range", "bytes=0-")
         val request = requestBuilder.build()
-        val response = client.newCall(request).execute()
-
-        if (!response.isSuccessful) {
-          withContext(Dispatchers.Main) {
-            Toast.makeText(context, "Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
+        client.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) {
+            file.delete()
+            withContext(Dispatchers.Main) {
+              Toast.makeText(context, "Download failed: ${response.code}", Toast.LENGTH_SHORT).show()
+            }
+            notificationManager.cancel(notificationId)
+            return@withContext
           }
-          notificationManager.cancel(notificationId)
-          return@withContext
-        }
 
-        response.body?.let { body ->
-          val contentLength = body.contentLength()
-          body.byteStream().use { input ->
-            context.contentResolver.openOutputStream(file.uri)?.use { output ->
-              val buffer = ByteArray(8 * 1024)
-              var bytesRead: Int
-              var totalBytesRead = 0L
-              var lastUpdate = 0L
-              while (input.read(buffer).also { bytesRead = it } != -1) {
-                output.write(buffer, 0, bytesRead)
-                totalBytesRead += bytesRead
-                val currentTime = System.currentTimeMillis()
-                if (contentLength > 0 && currentTime - lastUpdate > 1000) {
-                  val progress = ((totalBytesRead * 100) / contentLength).toInt()
-                  notificationBuilder
-                    .setProgress(100, progress, false)
-                    .setContentText("Downloading ($progress%)")
-                  notificationManager.notify(notificationId, notificationBuilder.build())
-                  lastUpdate = currentTime
+          response.body?.let { body ->
+            val contentLength = body.contentLength()
+            body.byteStream().use { input ->
+              context.contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
+                val buffer = ByteArray(8 * 1024)
+                var bytesRead: Int
+                var totalBytesRead = 0L
+                var lastUpdate = 0L
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                  output.write(buffer, 0, bytesRead)
+                  totalBytesRead += bytesRead
+                  val currentTime = System.currentTimeMillis()
+                  if (contentLength > 0 && currentTime - lastUpdate > 1000) {
+                    val progress = ((totalBytesRead * 100) / contentLength).toInt()
+                    notificationBuilder
+                      .setProgress(100, progress, false)
+                      .setContentText("Downloading ($progress%)")
+                    notificationManager.notify(notificationId, notificationBuilder.build())
+                    lastUpdate = currentTime
+                  }
                 }
               }
             }

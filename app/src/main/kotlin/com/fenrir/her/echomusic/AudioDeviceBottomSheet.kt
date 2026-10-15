@@ -147,6 +147,20 @@ fun AudioDeviceBottomSheet(onDismiss: () -> Unit, modifier: Modifier = Modifier)
   val playerConnection = LocalPlayerConnection.current
   val service = playerConnection?.service
 
+  var showSignalPathDialog by remember { mutableStateOf(false) }
+
+  if (showSignalPathDialog && playerConnection != null) {
+    val report by playerConnection.signalPathReport.collectAsState()
+    val dacState = playerConnection.usbDacMonitor.state.collectAsState().value
+    val needsPerm = dacState.dac?.hasUsbPeripheral == true && dacState.dac?.usbPermissionGranted == false
+    com.fenrir.her.ui.component.SignalPathDialog(
+      report = report,
+      needsUsbPermission = needsPerm,
+      onRequestUsbAccess = { playerConnection.usbDacMonitor.requestPermission() },
+      onDismiss = { showSignalPathDialog = false },
+    )
+  }
+
   // Cast volume support
   val castHandler =
     remember(service) {
@@ -655,7 +669,95 @@ fun AudioDeviceBottomSheet(onDismiss: () -> Unit, modifier: Modifier = Modifier)
 
           DownloadQualitySelector()
 
-          Spacer(modifier = Modifier.height(24.dp))
+          Spacer(modifier = Modifier.height(16.dp))
+
+          val dacState = playerConnection?.usbDacMonitor?.state?.collectAsState()?.value
+          val usbDac = dacState?.dac
+          val isUsbBitPerfect = playerConnection?.usbExclusiveEnabled?.collectAsState()?.value ?: false
+
+          if (usbDac != null) {
+            Surface(
+              shape = RoundedCornerShape(20.dp),
+              color = MaterialTheme.colorScheme.surfaceContainerHigh,
+              modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+              Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Usb,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                  )
+                  Spacer(modifier = Modifier.width(12.dp))
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = usbDac.name,
+                      style = MaterialTheme.typography.titleMedium,
+                      fontWeight = FontWeight.Bold
+                    )
+                    val ratesText = if (usbDac.sampleRatesHz.isNotEmpty()) {
+                      usbDac.sampleRatesHz.joinToString(", ") { "${it / 1000}kHz" }
+                    } else {
+                      "USB Audio Class DAC"
+                    }
+                    Text(
+                      text = ratesText,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = stringResource(R.string.usb_bit_perfect_title),
+                      style = MaterialTheme.typography.bodyMedium,
+                      fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                      text = stringResource(R.string.usb_bit_perfect_desc),
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  }
+                  androidx.compose.material3.Switch(
+                    checked = isUsbBitPerfect,
+                    onCheckedChange = { playerConnection?.setUsbBitPerfectEnabled(it) }
+                  )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                  onClick = { showSignalPathDialog = true },
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = RoundedCornerShape(12.dp)
+                ) {
+                  Text(stringResource(R.string.signal_path_btn))
+                }
+              }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+          } else {
+            Button(
+              onClick = { showSignalPathDialog = true },
+              modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+              shape = RoundedCornerShape(16.dp)
+            ) {
+              Text(stringResource(R.string.signal_path_btn))
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+          }
 
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -872,7 +974,7 @@ fun AudioQualitySelector(context: Context) {
     )
 
     val qualityItems = listOf(
-      AudioQuality.HI_RES_LOSSLESS to "Hi-Res",
+      AudioQuality.HI_RES_LOSSLESS to "Best",
       AudioQuality.HIGH to "High",
       AudioQuality.AUTO to "Auto",
       AudioQuality.MEDIUM to "160k",
