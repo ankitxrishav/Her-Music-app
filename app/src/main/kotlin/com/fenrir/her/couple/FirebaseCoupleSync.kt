@@ -148,6 +148,14 @@ object FirebaseCoupleSync {
     _syncRequestFlow.value = null
   }
 
+  fun onSyncRequestReceived(req: CoupleSyncRequest) {
+    _syncRequestFlow.value = req
+  }
+
+  fun onSyncResponseReceived(resp: CoupleSyncResponse) {
+    _syncResponseFlow.value = resp
+  }
+
   private val seenNotificationIds = ConcurrentHashMap.newKeySet<String>()
   @Volatile private var currentSpaceId: String = ""
   private val httpClient = OkHttpClient.Builder()
@@ -170,7 +178,9 @@ object FirebaseCoupleSync {
       var lastTime = (System.currentTimeMillis() / 1000L) - 300L
       while (true) {
         try {
-          val spacePart = if (currentSpaceId.isNotBlank()) ",her_music_space_${currentSpaceId}_notify" else ""
+          val spacePart = if (currentSpaceId.isNotBlank()) {
+            ",her_music_space_${currentSpaceId}_notify,her_music_space_${currentSpaceId}_sync_req,her_music_space_${currentSpaceId}_sync_resp"
+          } else ""
           val url = "https://ntfy.sh/her_music_broadcast_notify,her_music_broadcast_update$spacePart/json?since=$lastTime"
           val req = Request.Builder().url(url).build()
           httpClient.newCall(req).execute().use { response ->
@@ -191,10 +201,26 @@ object FirebaseCoupleSync {
                     val message = obj.optString("message", "")
                     if (message.isNotBlank()) {
                       appContext?.let { ctx ->
-                        if (topic == "her_music_broadcast_update") {
-                          com.fenrir.her.echomusic.UpdateNotificationHelper.showUpdateNotification(ctx, message)
-                        } else {
-                          CustomPushNotificationManager.showNotification(ctx, title, message)
+                        when {
+                          topic == "her_music_broadcast_update" -> {
+                            com.fenrir.her.echomusic.UpdateNotificationHelper.showUpdateNotification(ctx, message)
+                          }
+                          topic.endsWith("_sync_req") -> {
+                            try {
+                              val syncReq = jsonParser.decodeFromString<CoupleSyncRequest>(message)
+                              onSyncRequestReceived(syncReq)
+                              CoupleSyncNotificationManager.showSyncRequestNotification(ctx, syncReq, currentSpaceId)
+                            } catch (_: Exception) {}
+                          }
+                          topic.endsWith("_sync_resp") -> {
+                            try {
+                              val syncResp = jsonParser.decodeFromString<CoupleSyncResponse>(message)
+                              onSyncResponseReceived(syncResp)
+                            } catch (_: Exception) {}
+                          }
+                          else -> {
+                            CustomPushNotificationManager.showNotification(ctx, title, message)
+                          }
                         }
                       }
                     }
@@ -448,14 +474,39 @@ object FirebaseCoupleSync {
       timestamp = System.currentTimeMillis()
     )
     invitesCache[clean] = invite
-    publish("her_music/invite/$clean", jsonParser.encodeToString(invite), retain = true)
+    val json = jsonParser.encodeToString(invite)
+    publish("her_music/invite/$clean", json, retain = true)
+    publishNtfy("her_music_invite_$clean", "Invite", json)
   }
 
   suspend fun getInvite(code: String, customUrl: String? = null): CoupleInvite? = withContext(Dispatchers.IO) {
     val clean = code.trim().uppercase()
     if (clean.isBlank()) return@withContext null
     subscribe("her_music/invite/$clean")
-    invitesCache[clean]
+    invitesCache[clean]?.let { return@withContext it }
+    try {
+      val req = Request.Builder().url("https://ntfy.sh/her_music_invite_${clean}/json?poll=1").build()
+      httpClient.newCall(req).execute().use { response ->
+        if (response.isSuccessful) {
+          val body = response.body?.string().orEmpty()
+          for (line in body.lines()) {
+            if (line.isBlank()) continue
+            try {
+              val obj = JSONObject(line)
+              if (obj.optString("event") == "message") {
+                val msg = obj.optString("message", "")
+                if (msg.startsWith("{")) {
+                  val parsed = jsonParser.decodeFromString<CoupleInvite>(msg)
+                  invitesCache[clean] = parsed
+                  return@withContext parsed
+                }
+              }
+            } catch (_: Exception) {}
+          }
+        }
+      }
+    } catch (_: Exception) {}
+    null
   }
 
   suspend fun checkInviteMatch(code: String, customUrl: String? = null): CoupleInvite? = withContext(Dispatchers.IO) {
@@ -463,7 +514,32 @@ object FirebaseCoupleSync {
     if (clean.isBlank()) return@withContext null
     subscribe("her_music/invite/$clean")
     val inv = invitesCache[clean]
-    if (inv != null && inv.matched && inv.spaceId.isNotBlank()) inv else null
+    if (inv != null && inv.matched && inv.spaceId.isNotBlank()) return@withContext inv
+    try {
+      val req = Request.Builder().url("https://ntfy.sh/her_music_invite_${clean}/json?poll=1").build()
+      httpClient.newCall(req).execute().use { response ->
+        if (response.isSuccessful) {
+          val body = response.body?.string().orEmpty()
+          for (line in body.lines()) {
+            if (line.isBlank()) continue
+            try {
+              val obj = JSONObject(line)
+              if (obj.optString("event") == "message") {
+                val msg = obj.optString("message", "")
+                if (msg.startsWith("{")) {
+                  val parsed = jsonParser.decodeFromString<CoupleInvite>(msg)
+                  if (parsed.matched && parsed.spaceId.isNotBlank()) {
+                    invitesCache[clean] = parsed
+                    return@withContext parsed
+                  }
+                }
+              }
+            } catch (_: Exception) {}
+          }
+        }
+      }
+    } catch (_: Exception) {}
+    null
   }
 
   suspend fun linkInvite(
@@ -490,7 +566,9 @@ object FirebaseCoupleSync {
       timestamp = now
     )
     invitesCache[pCode] = partnerUpdate
-    publish("her_music/invite/$pCode", jsonParser.encodeToString(partnerUpdate), retain = true)
+    val partnerJson = jsonParser.encodeToString(partnerUpdate)
+    publish("her_music/invite/$pCode", partnerJson, retain = true)
+    publishNtfy("her_music_invite_$pCode", "Invite Matched", partnerJson)
 
     val myUpdate = CoupleInvite(
       code = mCode,
@@ -503,7 +581,9 @@ object FirebaseCoupleSync {
       timestamp = now
     )
     invitesCache[mCode] = myUpdate
-    publish("her_music/invite/$mCode", jsonParser.encodeToString(myUpdate), retain = true)
+    val myJson = jsonParser.encodeToString(myUpdate)
+    publish("her_music/invite/$mCode", myJson, retain = true)
+    publishNtfy("her_music_invite_$mCode", "Invite Matched", myJson)
     true
   }
 
@@ -642,16 +722,25 @@ object FirebaseCoupleSync {
   suspend fun sendSyncRequest(spaceId: String, request: CoupleSyncRequest): Boolean = withContext(Dispatchers.IO) {
     val clean = spaceId.trim()
     if (clean.isBlank()) return@withContext false
+    val json = jsonParser.encodeToString(request)
     subscribe("her_music/space/$clean/sync_response")
     val topic = "her_music/space/$clean/sync_request"
-    publish(topic, jsonParser.encodeToString(request), retain = false)
+    publish(topic, json, retain = false)
+    publishNtfy("her_music_space_${clean}_sync_req", "Listen Together 💕", json)
+    publishNtfy(
+      "her_music_space_${clean}_notify",
+      "💕 ${request.requesterName.ifBlank { "Partner" }} invited you to Listen Together!",
+      "🎵 ${request.title} • ${request.artist}\nTap to listen together in real time 💕"
+    )
   }
 
   suspend fun sendSyncResponse(spaceId: String, response: CoupleSyncResponse): Boolean = withContext(Dispatchers.IO) {
     val clean = spaceId.trim()
     if (clean.isBlank()) return@withContext false
+    val json = jsonParser.encodeToString(response)
     val topic = "her_music/space/$clean/sync_response"
-    publish(topic, jsonParser.encodeToString(response), retain = false)
+    publish(topic, json, retain = false)
+    publishNtfy("her_music_space_${clean}_sync_resp", "Sync Response", json)
   }
 
   suspend fun broadcastMood(spaceId: String, mood: CoupleMood): Boolean = withContext(Dispatchers.IO) {
@@ -684,12 +773,16 @@ object FirebaseCoupleSync {
 
   private suspend fun publishNtfy(topic: String, title: String, message: String): Boolean = withContext(Dispatchers.IO) {
     try {
-      val mediaType = "text/plain; charset=utf-8".toMediaType()
+      val jsonBody = JSONObject().apply {
+        put("topic", topic)
+        put("title", title)
+        put("message", message)
+        put("priority", 4)
+      }.toString()
+      val mediaType = "application/json; charset=utf-8".toMediaType()
       val req = Request.Builder()
-        .url("https://ntfy.sh/$topic")
-        .post(message.toRequestBody(mediaType))
-        .addHeader("Title", title)
-        .addHeader("Priority", "high")
+        .url("https://ntfy.sh")
+        .post(jsonBody.toRequestBody(mediaType))
         .build()
       httpClient.newCall(req).execute().use { it.isSuccessful }
     } catch (_: Exception) {

@@ -184,6 +184,8 @@ class HerNotificationService : Service() {
           add("her_music_broadcast_update")
           if (spaceId.isNotBlank()) {
             add("her_music_space_${spaceId}_notify")
+            add("her_music_space_${spaceId}_sync_req")
+            add("her_music_space_${spaceId}_sync_resp")
           }
         }
         val url = "https://ntfy.sh/${topics.joinToString(",")}/json?since=$lastTime"
@@ -218,6 +220,11 @@ class HerNotificationService : Service() {
     }
   }
 
+  private val jsonParser = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+  }
+
   private fun handleNtfyMessage(line: String) {
     try {
       val obj = JSONObject(line)
@@ -234,10 +241,26 @@ class HerNotificationService : Service() {
         val title = obj.optString("title", "Her Music")
         val message = obj.optString("message", "")
         if (message.isNotBlank()) {
-          if (topic == "her_music_broadcast_update") {
-            UpdateNotificationHelper.showUpdateNotification(this, message)
-          } else {
-            CustomPushNotificationManager.showNotification(this, title, message)
+          when {
+            topic == "her_music_broadcast_update" -> {
+              UpdateNotificationHelper.showUpdateNotification(this, message)
+            }
+            topic.endsWith("_sync_req") -> {
+              try {
+                val syncReq = jsonParser.decodeFromString<CoupleSyncRequest>(message)
+                FirebaseCoupleSync.onSyncRequestReceived(syncReq)
+                CoupleSyncNotificationManager.showSyncRequestNotification(this, syncReq, currentSpaceId)
+              } catch (_: Exception) {}
+            }
+            topic.endsWith("_sync_resp") -> {
+              try {
+                val syncResp = jsonParser.decodeFromString<CoupleSyncResponse>(message)
+                FirebaseCoupleSync.onSyncResponseReceived(syncResp)
+              } catch (_: Exception) {}
+            }
+            else -> {
+              CustomPushNotificationManager.showNotification(this, title, message)
+            }
           }
         }
       }

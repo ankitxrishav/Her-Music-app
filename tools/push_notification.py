@@ -110,18 +110,55 @@ def push_custom(title, message, sender="Him", space_id=None):
     broadcast_to_all(topic, payload, retain=False)
     print("\nPush notification dispatched successfully across HTTPS and MQTT channels!")
 
+def push_sync_invite(space_id, song_id, title, artist, requester_name="Him", requester_role="HIM", pos_ms=0):
+    clean = space_id.strip()
+    topic = f"her_music/space/{clean}/sync_request"
+    ntfy_sync_topic = f"her_music_space_{clean}_sync_req"
+    ntfy_notify_topic = f"her_music_space_{clean}_notify"
+
+    payload = json.dumps({
+        "requestId": str(int(time.time() * 1000)),
+        "requesterRole": requester_role,
+        "requesterName": requester_name,
+        "songId": song_id,
+        "title": title,
+        "artist": artist,
+        "thumbnailUrl": None,
+        "positionMs": pos_ms,
+        "isPlaying": True,
+        "timestamp": int(time.time() * 1000)
+    })
+    print(f"Sending Listen Together sync invitation for '{title}' to space '{clean}'...")
+    publish_https(ntfy_sync_topic, "Listen Together 💕", payload)
+    publish_https(ntfy_notify_topic, f"💕 {requester_name} invited you to Listen Together!", f"🎵 {title} • {artist}\nTap to listen together in real time 💕")
+    broadcast_to_all(topic, payload, retain=False)
+    print("\nListen Together sync invitation dispatched successfully!")
+
 def main():
     parser = argparse.ArgumentParser(description="Her Music Push Notification Tool")
-    parser.add_argument("--update", help="Push an app update notification (e.g. 1.5.23)")
+    parser.add_argument("--update", help="Push an app update notification (e.g. 1.5.26)")
     parser.add_argument("--title", help="Custom notification title")
     parser.add_argument("--message", help="Custom notification body message")
     parser.add_argument("--sender", default="Him", help="Sender label (default: Him)")
     parser.add_argument("--space", help="Target couple space ID (optional, defaults to broadcast)")
+    parser.add_argument("--invite", action="store_true", help="Send Listen Together sync invitation")
+    parser.add_argument("--song-id", default="", help="Song video ID for invite")
+    parser.add_argument("--song-title", default="Together", help="Song title for invite")
+    parser.add_argument("--song-artist", default="Our Song", help="Song artist for invite")
 
     args = parser.parse_args()
 
     if args.update:
         push_update(args.update)
+    elif args.invite:
+        space = args.space or input("Enter couple space ID: ").strip()
+        push_sync_invite(
+            space_id=space,
+            song_id=args.song_id,
+            title=args.song_title,
+            artist=args.song_artist,
+            requester_name=args.sender
+        )
     elif args.message:
         title = args.title if args.title else "Her Music"
         push_custom(title, args.message, args.sender, args.space)
@@ -130,9 +167,10 @@ def main():
         print("===========================")
         print("1) Push App Update Notification")
         print("2) Push Custom Message Notification")
-        choice = input("Select an option (1/2): ").strip()
+        print("3) Push Listen Together Sync Invitation")
+        choice = input("Select an option (1/2/3): ").strip()
         if choice == "1":
-            ver = input("Enter new version (e.g. 1.5.23): ").strip()
+            ver = input("Enter new version (e.g. 1.5.26): ").strip()
             if ver:
                 push_update(ver)
         elif choice == "2":
@@ -142,6 +180,14 @@ def main():
             space = input("Enter couple space ID (leave empty for broadcast): ").strip() or None
             if msg:
                 push_custom(title or "Her Music", msg, sender, space)
+        elif choice == "3":
+            space = input("Enter couple space ID: ").strip()
+            song_title = input("Enter song title: ").strip() or "Our Song"
+            song_artist = input("Enter artist: ").strip() or "Her"
+            song_id = input("Enter YouTube video ID (or leave empty): ").strip()
+            sender = input("Enter your name (default: Him): ").strip() or "Him"
+            if space:
+                push_sync_invite(space, song_id, song_title, song_artist, sender)
         else:
             parser.print_help()
 

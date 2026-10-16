@@ -26,7 +26,11 @@ object CoupleSyncNotificationManager {
       val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
         description = descriptionText
         enableVibration(true)
+        vibrationPattern = longArrayOf(0, 350, 150, 350)
+        enableLights(true)
+        lightColor = 0xFFE91E63.toInt()
         setShowBadge(true)
+        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
       }
       val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       notificationManager.createNotificationChannel(channel)

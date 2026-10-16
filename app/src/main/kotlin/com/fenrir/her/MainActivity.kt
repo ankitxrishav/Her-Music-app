@@ -898,6 +898,9 @@ class MainActivity : ComponentActivity() {
         val coupleMyName = com.fenrir.her.auth.CoupleAuthGuard.getMyName(coupleRole, customCoupleMyName)
 
         LaunchedEffect(isCouplePaired, coupleSpaceId, coupleRole, coupleMyName, playerConnection) {
+          if (playerConnection != null) {
+            com.fenrir.her.couple.CouplePlaybackSyncManager.setPlayerConnection(playerConnection)
+          }
           if (isCouplePaired && coupleSpaceId.isNotBlank()) {
             com.fenrir.her.couple.FirebaseCoupleSync.subscribeSpace(coupleSpaceId)
             com.fenrir.her.couple.CouplePlaybackSyncManager.startBroadcaster(
@@ -1982,6 +1985,16 @@ class MainActivity : ComponentActivity() {
         val posMs = intent.getLongExtra("EXTRA_POSITION_MS", 0L)
         val requesterName = intent.getStringExtra("EXTRA_REQUESTER_NAME") ?: "Partner"
         lifecycle.coroutineScope.launch {
+          var attempts = 0
+          while (playerConnection == null && attempts < 40) {
+            delay(100)
+            attempts++
+          }
+          val conn = playerConnection
+          if (conn != null) {
+            com.fenrir.her.couple.CouplePlaybackSyncManager.setPlayerConnection(conn)
+          }
+
           val customUrl = dataStore.get(com.fenrir.her.constants.CoupleFirebaseUrlKey, "").ifBlank { null }
           val coupleRolePref = dataStore.get(com.fenrir.her.constants.CoupleRoleKey, "HIM")
           val coupleRole = if (coupleRolePref == "HER") com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HER else com.fenrir.her.auth.CoupleAuthGuard.CoupleRole.HIM
@@ -2003,25 +2016,22 @@ class MainActivity : ComponentActivity() {
               scope = this,
               spaceId = spaceId,
               myRole = coupleRole,
-              playerConnection = playerConnection,
+              playerConnection = conn,
               customUrl = customUrl
             )
           }
 
-          var attempts = 0
-          while (playerConnection == null && attempts < 25) {
-            delay(100)
-            attempts++
-          }
-
-          if (songId.isNotBlank()) {
-            playerConnection?.playQueue(
+          if (songId.isNotBlank() && conn != null) {
+            conn.playQueue(
               com.fenrir.her.playback.queues.YouTubeQueue(
                 com.music.innertube.models.WatchEndpoint(videoId = songId)
               )
             )
             if (posMs > 0L) {
-              playerConnection?.player?.seekTo(posMs)
+              delay(300)
+              try {
+                conn.player.seekTo(posMs)
+              } catch (_: Exception) {}
             }
           }
           com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()

@@ -35,6 +35,14 @@ object CouplePlaybackSyncManager {
   private val _isLiveSyncing = MutableStateFlow(false)
   val isLiveSyncing: StateFlow<Boolean> = _isLiveSyncing.asStateFlow()
 
+  private var activePlayerConnection: PlayerConnection? = null
+
+  fun setPlayerConnection(connection: PlayerConnection?) {
+    if (connection != null) {
+      activePlayerConnection = connection
+    }
+  }
+
   fun startBroadcaster(
     scope: CoroutineScope,
     spaceId: String,
@@ -43,6 +51,7 @@ object CouplePlaybackSyncManager {
     playerConnection: PlayerConnection?,
     customUrl: String? = null
   ) {
+    if (playerConnection != null) setPlayerConnection(playerConnection)
     stopLiveSyncFollow()
     stopBroadcaster()
     if (spaceId.isBlank()) return
@@ -51,8 +60,9 @@ object CouplePlaybackSyncManager {
       if (_isLiveSyncing.value) return
       managerScope.launch(Dispatchers.Main) {
         try {
-          val player = playerConnection?.player ?: return@launch
-          val meta = playerConnection.service.currentMediaMetadata.value ?: return@launch
+          val conn = playerConnection ?: activePlayerConnection ?: return@launch
+          val player = conn.player
+          val meta = conn.service.currentMediaMetadata.value ?: return@launch
           val live = CoupleLivePlayback(
             songId = meta.id,
             title = meta.title,
@@ -72,7 +82,7 @@ object CouplePlaybackSyncManager {
       }
     }
 
-    val player = playerConnection?.player
+    val player = (playerConnection ?: activePlayerConnection)?.player
     if (player != null) {
       val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -100,8 +110,9 @@ object CouplePlaybackSyncManager {
       while (isActive) {
         try {
           if (!_isLiveSyncing.value) {
-            val p = playerConnection?.player
-            val m = playerConnection?.service?.currentMediaMetadata?.value
+            val conn = playerConnection ?: activePlayerConnection
+            val p = conn?.player
+            val m = conn?.service?.currentMediaMetadata?.value
             if (p != null && m != null && p.isPlaying) {
               val live = CoupleLivePlayback(
                 songId = m.id,
@@ -134,8 +145,9 @@ object CouplePlaybackSyncManager {
     if (spaceId.isNotBlank() && role != null) {
       managerScope.launch(Dispatchers.IO) {
         try {
-          val player = playerConnection?.player
-          val meta = playerConnection?.service?.currentMediaMetadata?.value
+          val conn = playerConnection ?: activePlayerConnection
+          val player = conn?.player
+          val meta = conn?.service?.currentMediaMetadata?.value
           val live = CoupleLivePlayback(
             songId = meta?.id ?: "",
             title = meta?.title ?: "",
@@ -166,6 +178,7 @@ object CouplePlaybackSyncManager {
     playerConnection: PlayerConnection?,
     customUrl: String? = null
   ) {
+    if (playerConnection != null) setPlayerConnection(playerConnection)
     stopBroadcaster()
     stopLiveSyncFollow()
     if (spaceId.isBlank()) return
@@ -181,8 +194,11 @@ object CouplePlaybackSyncManager {
     syncJob = managerScope.launch {
       launch {
         FirebaseCoupleSync.liveFlow.collect { partnerLive ->
-          if (partnerLive != null && partnerLive.senderRole != myRole.name && partnerLive.songId.isNotBlank()) {
-            applyPartnerPlayback(partnerLive, playerConnection)
+          if (partnerLive != null && partnerLive.songId.isNotBlank()) {
+            val isPartner = partnerLive.senderRole != myRole.name || partnerLive.senderName.isNotBlank()
+            if (isPartner) {
+              applyPartnerPlayback(partnerLive, playerConnection ?: activePlayerConnection)
+            }
           }
         }
       }
@@ -192,8 +208,11 @@ object CouplePlaybackSyncManager {
           val partnerLive = withContext(Dispatchers.IO) {
             FirebaseCoupleSync.fetchPartnerLivePlayback(spaceId, partnerRole.name, customUrl)
           }
-          if (partnerLive != null && partnerLive.senderRole != myRole.name && partnerLive.songId.isNotBlank()) {
-            applyPartnerPlayback(partnerLive, playerConnection)
+          if (partnerLive != null && partnerLive.songId.isNotBlank()) {
+            val isPartner = partnerLive.senderRole != myRole.name || partnerLive.senderName.isNotBlank()
+            if (isPartner) {
+              applyPartnerPlayback(partnerLive, playerConnection ?: activePlayerConnection)
+            }
           }
         } catch (_: Exception) {}
         delay(2500)
@@ -207,15 +226,16 @@ object CouplePlaybackSyncManager {
 
   private fun applyPartnerPlayback(partnerLive: CoupleLivePlayback, playerConnection: PlayerConnection?) {
     _partnerPlayback.value = partnerLive
-    val player = playerConnection?.player ?: return
-    val currentMeta = playerConnection.service.currentMediaMetadata.value
+    val conn = playerConnection ?: activePlayerConnection ?: return
+    val player = conn.player
+    val currentMeta = conn.service.currentMediaMetadata.value
 
     if (currentMeta?.id != partnerLive.songId) {
       val now = System.currentTimeMillis()
       if (lastRequestedSongId != partnerLive.songId || now - lastRequestedAt > 10000L) {
         lastRequestedSongId = partnerLive.songId
         lastRequestedAt = now
-        playerConnection.playQueue(YouTubeQueue(WatchEndpoint(videoId = partnerLive.songId)))
+        conn.playQueue(YouTubeQueue(WatchEndpoint(videoId = partnerLive.songId)))
       }
       return
     }

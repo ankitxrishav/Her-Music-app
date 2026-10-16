@@ -33,8 +33,8 @@ android {
     applicationId = "com.fenrir.her"
     minSdk = 26
     targetSdk = 36
-    versionCode = 176
-    versionName = "1.5.25"
+    versionCode = 177
+    versionName = "1.5.26"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables.useSupportLibrary = true
