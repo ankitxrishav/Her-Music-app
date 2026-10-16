@@ -124,7 +124,34 @@ object CouplePlaybackSyncManager {
     }
   }
 
-  fun stopBroadcaster() {
+  fun stopBroadcaster(
+    spaceId: String = "",
+    role: CoupleAuthGuard.CoupleRole? = null,
+    myName: String = "",
+    playerConnection: PlayerConnection? = null,
+    customUrl: String? = null
+  ) {
+    if (spaceId.isNotBlank() && role != null) {
+      managerScope.launch(Dispatchers.IO) {
+        try {
+          val player = playerConnection?.player
+          val meta = playerConnection?.service?.currentMediaMetadata?.value
+          val live = CoupleLivePlayback(
+            songId = meta?.id ?: "",
+            title = meta?.title ?: "",
+            artist = meta?.artists?.joinToString { it.name } ?: "",
+            thumbnailUrl = meta?.thumbnailUrl,
+            isPlaying = false,
+            positionMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L,
+            durationMs = player?.duration?.coerceAtLeast(0L) ?: 0L,
+            timestampEpochMs = System.currentTimeMillis(),
+            senderRole = role.name,
+            senderName = myName
+          )
+          FirebaseCoupleSync.broadcastLivePlayback(spaceId, live, customUrl)
+        } catch (_: Exception) {}
+      }
+    }
     broadcastJob?.cancel()
     broadcastJob = null
     playerListener?.let { attachedPlayer?.removeListener(it) }
@@ -224,9 +251,15 @@ object CouplePlaybackSyncManager {
     lastRequestedAt = 0L
   }
 
-  fun disconnectSync() {
+  fun disconnectSync(
+    spaceId: String = "",
+    role: CoupleAuthGuard.CoupleRole? = null,
+    myName: String = "",
+    playerConnection: PlayerConnection? = null,
+    customUrl: String? = null
+  ) {
     stopLiveSyncFollow()
-    stopBroadcaster()
+    stopBroadcaster(spaceId, role, myName, playerConnection, customUrl)
   }
 
   fun fetchPartnerPreview(

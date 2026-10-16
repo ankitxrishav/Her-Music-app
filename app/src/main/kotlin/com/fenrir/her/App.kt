@@ -97,6 +97,7 @@ class App : Application(), SingletonImageLoader.Factory {
     com.fenrir.her.utils.cipher.CipherDeobfuscator.initialize(this)
     com.fenrir.her.utils.YTPlayerUtils.initialize()
     com.fenrir.her.couple.FirebaseCoupleSync.init(this)
+    com.fenrir.her.couple.HerNotificationService.start(this)
 
     if (BuildConfig.DEBUG) {
       Timber.plant(Timber.DebugTree())
