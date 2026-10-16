@@ -66,11 +66,15 @@ def broadcast_to_all(topic, payload_str, retain=False):
 
 def publish_https(topic, title, message):
     try:
-        url = f"https://ntfy.sh/{topic}"
-        data = message.encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
-        req.add_header("Title", title)
-        req.add_header("Priority", "high")
+        url = "https://ntfy.sh"
+        payload = json.dumps({
+            "topic": topic,
+            "title": title,
+            "message": message,
+            "priority": 4
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json; charset=utf-8")
         with urllib.request.urlopen(req, timeout=8) as resp:
             if resp.status == 200:
                 print(f"  [✓] Sent via HTTPS relay (ntfy.sh/{topic})")
