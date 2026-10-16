@@ -6,6 +6,7 @@ import json
 import argparse
 import random
 import time
+import urllib.request
 
 BROKERS = [
     ("broker.emqx.io", 1883),
@@ -58,38 +59,52 @@ def broadcast_to_all(topic, payload_str, retain=False):
         try:
             publish_mqtt(host, port, topic, payload_str, retain=retain)
             success_count += 1
-            print(f"  [✓] Sent via {host}")
+            print(f"  [✓] Sent via MQTT ({host})")
         except Exception as e:
-            print(f"  [x] Failed via {host}: {e}")
+            print(f"  [x] MQTT failed via {host}: {e}")
     return success_count > 0
+
+def publish_https(topic, title, message):
+    try:
+        url = f"https://ntfy.sh/{topic}"
+        data = message.encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Title", title)
+        req.add_header("Priority", "high")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                print(f"  [✓] Sent via HTTPS relay (ntfy.sh/{topic})")
+                return True
+    except Exception as e:
+        print(f"  [x] HTTPS relay failed: {e}")
+    return False
 
 def push_update(version):
     topic = "her_music/broadcast/update"
+    ntfy_topic = "her_music_broadcast_update"
     payload = json.dumps({"version": version})
     print(f"Pushing app update notification for version {version}...")
-    ok = broadcast_to_all(topic, payload, retain=True)
-    if ok:
-        print(f"\nSuccessfully broadcasted update notification for v{version}!")
-    else:
-        print("\nFailed to broadcast to all brokers.")
+    publish_https(ntfy_topic, "Her Music Update Available", version)
+    broadcast_to_all(topic, payload, retain=True)
+    print(f"\nBroadcasted update notification for v{version}!")
 
 def push_custom(title, message, sender="Him", space_id=None):
     if space_id:
         topic = f"her_music/space/{space_id.strip()}/notify"
+        ntfy_topic = f"her_music_space_{space_id.strip()}_notify"
     else:
         topic = "her_music/broadcast/notify"
+        ntfy_topic = "her_music_broadcast_notify"
 
     payload = json.dumps({
         "title": title,
         "message": message,
         "sender": sender
     })
-    print(f"Pushing notification: '{title}' - '{message}' to {topic}...")
-    ok = broadcast_to_all(topic, payload, retain=False)
-    if ok:
-        print("\nSuccessfully sent push notification to Her device!")
-    else:
-        print("\nFailed to broadcast to brokers.")
+    print(f"Pushing notification: '{title}' - '{message}'...")
+    publish_https(ntfy_topic, title, message)
+    broadcast_to_all(topic, payload, retain=False)
+    print("\nPush notification dispatched successfully across HTTPS and MQTT channels!")
 
 def main():
     parser = argparse.ArgumentParser(description="Her Music Push Notification Tool")

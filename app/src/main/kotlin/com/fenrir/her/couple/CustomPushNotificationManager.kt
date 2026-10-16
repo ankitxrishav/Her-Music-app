@@ -39,13 +39,14 @@ object CustomPushNotificationManager {
   fun showNotification(context: Context, title: String, message: String, sender: String? = null) {
     createNotificationChannel(context)
 
+    val notifId = (System.currentTimeMillis() % 100000).toInt() + 1000
     val contentIntent = Intent(context, MainActivity::class.java).apply {
       flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
       putExtra("navigate_to", "couple_space")
     }
     val contentPendingIntent = PendingIntent.getActivity(
       context,
-      NOTIFICATION_ID,
+      notifId,
       contentIntent,
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
@@ -69,7 +70,7 @@ object CustomPushNotificationManager {
       Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
       ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     ) {
-      NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build())
+      NotificationManagerCompat.from(context).notify(notifId, builder.build())
     }
   }
 }

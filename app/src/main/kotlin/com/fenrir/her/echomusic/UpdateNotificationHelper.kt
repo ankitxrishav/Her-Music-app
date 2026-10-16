@@ -28,7 +28,13 @@ object UpdateNotificationHelper {
           CHANNEL_ID,
           context.getString(R.string.app_updates_title),
           NotificationManager.IMPORTANCE_HIGH
-        )
+        ).apply {
+          description = "Her Music update alerts"
+          enableVibration(true)
+          vibrationPattern = longArrayOf(0, 300, 150, 300)
+          enableLights(true)
+          lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        }
       nm.createNotificationChannel(channel)
     }
 
@@ -47,14 +53,20 @@ object UpdateNotificationHelper {
 
     val notif =
       NotificationCompat.Builder(context, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_launcher_nobg)
+        .setSmallIcon(R.drawable.favorite)
         .setContentTitle(context.getString(R.string.update_available_title))
         .setContentText("Her Music $versionName is available. Tap to download and install.")
+        .setStyle(
+          NotificationCompat.BigTextStyle()
+            .bigText("Her Music $versionName is available. Tap to download and install the newest release.")
+        )
         .setContentIntent(appPending)
         .addAction(R.drawable.deployed_app_update, "Update Now", appPending)
         .addAction(android.R.drawable.stat_sys_download, "Direct Download", downloadPending)
         .setAutoCancel(true)
-        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setPriority(NotificationCompat.PRIORITY_MAX)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .setColor(0xFFE91E63.toInt())
         .build()
 
     if (

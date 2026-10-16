@@ -511,7 +511,7 @@ class MainActivity : ComponentActivity() {
 
     LaunchedEffect(Unit) {
       if (getAutoUpdateCheckSetting(context)) {
-        delay(15000L)
+        delay(1500L)
         checkForUpdate(
           context = context,
           onSuccess = { latestVersion, isAvailable, changelog, _, _, description, _, _ ->
@@ -520,7 +520,7 @@ class MainActivity : ComponentActivity() {
               availableUpdateVersion = latestVersion
               availableUpdateChangelog = changelog
               availableUpdateDescription = description
-              showUpdateDialog = false
+              showUpdateDialog = true
             }
             if (isAvailable && getUpdateNotificationsSetting(context)) {
               UpdateNotificationHelper.showUpdateNotification(context, latestVersion)
@@ -628,7 +628,7 @@ class MainActivity : ComponentActivity() {
       pureBlack = pureBlack,
       themeColor = themeColor,
     ) {
-      if (false && showUpdateDialog) {
+      if (showUpdateDialog) {
         com.fenrir.her.echomusic.component.UpdateAvailableDialog(
           version = availableUpdateVersion,
           changelog = availableUpdateChangelog,

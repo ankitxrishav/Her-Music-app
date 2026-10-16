@@ -19,6 +19,12 @@ import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 
 @kotlinx.serialization.Serializable
 data class CoupleInvite(
@@ -142,12 +148,64 @@ object FirebaseCoupleSync {
     _syncRequestFlow.value = null
   }
 
+  private val seenNotificationIds = ConcurrentHashMap.newKeySet<String>()
+  @Volatile private var currentSpaceId: String = ""
+  private val httpClient = OkHttpClient.Builder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(60, TimeUnit.SECONDS)
+    .build()
+
   fun init(context: Context) {
     appContext = context.applicationContext
     kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
       ensureConnected()
       subscribe("her_music/broadcast/update")
       subscribe("her_music/broadcast/notify")
+    }
+    startHttpsListener()
+  }
+
+  private fun startHttpsListener() {
+    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+      var lastTime = (System.currentTimeMillis() / 1000L) - 300L
+      while (true) {
+        try {
+          val spacePart = if (currentSpaceId.isNotBlank()) ",her_music_space_${currentSpaceId}_notify" else ""
+          val url = "https://ntfy.sh/her_music_broadcast_notify,her_music_broadcast_update$spacePart/json?since=$lastTime"
+          val req = Request.Builder().url(url).build()
+          httpClient.newCall(req).execute().use { response ->
+            if (response.isSuccessful) {
+              val source = response.body?.source() ?: return@use
+              while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (line.isBlank()) continue
+                try {
+                  val obj = JSONObject(line)
+                  if (obj.optString("event") == "message") {
+                    val id = obj.optString("id")
+                    if (id.isNotBlank() && !seenNotificationIds.add(id)) continue
+                    val t = obj.optLong("time", 0L)
+                    if (t > lastTime) lastTime = t
+                    val topic = obj.optString("topic")
+                    val title = obj.optString("title", "Her Music")
+                    val message = obj.optString("message", "")
+                    if (message.isNotBlank()) {
+                      appContext?.let { ctx ->
+                        if (topic == "her_music_broadcast_update") {
+                          com.fenrir.her.echomusic.UpdateNotificationHelper.showUpdateNotification(ctx, message)
+                        } else {
+                          CustomPushNotificationManager.showNotification(ctx, title, message)
+                        }
+                      }
+                    }
+                  }
+                } catch (_: Exception) {}
+              }
+            }
+          }
+        } catch (_: Exception) {}
+        kotlinx.coroutines.delay(4000L)
+      }
     }
   }
 
@@ -570,6 +628,7 @@ object FirebaseCoupleSync {
   fun subscribeSpace(spaceId: String) {
     val clean = spaceId.trim()
     if (clean.isBlank()) return
+    currentSpaceId = clean
     subscribe("her_music/space/$clean/live")
     subscribe("her_music/space/$clean/sync_request")
     subscribe("her_music/space/$clean/sync_response")
@@ -611,12 +670,30 @@ object FirebaseCoupleSync {
     sender: String? = null
   ): Boolean = withContext(Dispatchers.IO) {
     val payload = jsonParser.encodeToString(CustomNotificationPayload(title, message, sender))
-    val topic = if (!spaceId.isNullOrBlank()) "her_music/space/${spaceId.trim()}/notify" else "her_music/broadcast/notify"
-    publish(topic, payload)
+    val topicMqtt = if (!spaceId.isNullOrBlank()) "her_music/space/${spaceId.trim()}/notify" else "her_music/broadcast/notify"
+    val topicNtfy = if (!spaceId.isNullOrBlank()) "her_music_space_${spaceId.trim()}_notify" else "her_music_broadcast_notify"
+    publish(topicMqtt, payload)
+    publishNtfy(topicNtfy, title, message)
   }
 
   suspend fun broadcastUpdateNotification(version: String): Boolean = withContext(Dispatchers.IO) {
     val payload = jsonParser.encodeToString(UpdateNotificationPayload(version))
     publish("her_music/broadcast/update", payload, retain = true)
+    publishNtfy("her_music_broadcast_update", "App Update Available", version)
+  }
+
+  private suspend fun publishNtfy(topic: String, title: String, message: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val mediaType = "text/plain; charset=utf-8".toMediaType()
+      val req = Request.Builder()
+        .url("https://ntfy.sh/$topic")
+        .post(message.toRequestBody(mediaType))
+        .addHeader("Title", title)
+        .addHeader("Priority", "high")
+        .build()
+      httpClient.newCall(req).execute().use { it.isSuccessful }
+    } catch (_: Exception) {
+      false
+    }
   }
 }
