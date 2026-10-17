@@ -64,14 +64,14 @@ def broadcast_to_all(topic, payload_str, retain=False):
             print(f"  [x] MQTT failed via {host}: {e}")
     return success_count > 0
 
-def publish_https(topic, title, message):
+def publish_https(topic, title, message, priority=4):
     try:
         url = "https://ntfy.sh"
         payload = json.dumps({
             "topic": topic,
             "title": title,
             "message": message,
-            "priority": 4
+            "priority": priority
         }).encode("utf-8")
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Content-Type", "application/json; charset=utf-8")
@@ -129,8 +129,8 @@ def push_sync_invite(space_id, song_id, title, artist, requester_name="Him", req
         "timestamp": int(time.time() * 1000)
     })
     print(f"Sending Listen Together sync invitation for '{title}' to space '{clean}'...")
-    publish_https(ntfy_sync_topic, "Listen Together 💕", payload)
-    publish_https(ntfy_notify_topic, f"💕 {requester_name} invited you to Listen Together!", f"🎵 {title} • {artist}\nTap to listen together in real time 💕")
+    publish_https(ntfy_sync_topic, "Listen Together 💕", payload, priority=5)
+    publish_https(ntfy_notify_topic, f"💕 {requester_name} invited you to Listen Together!", f"🎵 {title} • {artist}\nTap to listen together in real time 💕", priority=5)
     broadcast_to_all(topic, payload, retain=False)
     print("\nListen Together sync invitation dispatched successfully!")
 

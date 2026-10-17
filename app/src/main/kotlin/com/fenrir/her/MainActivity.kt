@@ -903,6 +903,7 @@ class MainActivity : ComponentActivity() {
           }
           if (isCouplePaired && coupleSpaceId.isNotBlank()) {
             com.fenrir.her.couple.FirebaseCoupleSync.subscribeSpace(coupleSpaceId)
+            com.fenrir.her.couple.FirebaseCoupleSync.fetchLatestMood(coupleSpaceId)
             com.fenrir.her.couple.CouplePlaybackSyncManager.startBroadcaster(
               scope = this,
               spaceId = coupleSpaceId,
@@ -2059,6 +2060,30 @@ class MainActivity : ComponentActivity() {
             )
           }
           com.fenrir.her.couple.FirebaseCoupleSync.clearSyncRequest()
+        }
+      }
+      "com.fenrir.her.OPEN_SYNC_REQUEST" -> {
+        val reqId = intent.getStringExtra("EXTRA_REQ_ID") ?: ""
+        val songId = intent.getStringExtra("EXTRA_SONG_ID") ?: ""
+        val songTitle = intent.getStringExtra("EXTRA_SONG_TITLE") ?: ""
+        val songArtist = intent.getStringExtra("EXTRA_SONG_ARTIST") ?: ""
+        val posMs = intent.getLongExtra("EXTRA_POSITION_MS", 0L)
+        val requesterName = intent.getStringExtra("EXTRA_REQUESTER_NAME") ?: "Partner"
+        val requesterRole = intent.getStringExtra("EXTRA_REQUESTER_ROLE") ?: ""
+        if (reqId.isNotBlank()) {
+          com.fenrir.her.couple.FirebaseCoupleSync.onSyncRequestReceived(
+            com.fenrir.her.couple.CoupleSyncRequest(
+              requestId = reqId,
+              requesterRole = requesterRole,
+              requesterName = requesterName,
+              songId = songId,
+              title = songTitle,
+              artist = songArtist,
+              positionMs = posMs,
+              isPlaying = true,
+              timestamp = System.currentTimeMillis()
+            )
+          )
         }
       }
     }

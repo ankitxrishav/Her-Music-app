@@ -93,6 +93,11 @@ import com.fenrir.her.constants.CoupleLinkedTimestampKey
 import com.fenrir.her.constants.CoupleFirebaseUrlKey
 import com.fenrir.her.constants.CoupleLastSeenPushTimestampKey
 import com.fenrir.her.constants.CoupleSharedSongsKey
+import com.fenrir.her.constants.CoupleMyMoodEmojiKey
+import com.fenrir.her.constants.CoupleMyMoodTextKey
+import com.fenrir.her.constants.CouplePartnerMoodEmojiKey
+import com.fenrir.her.constants.CouplePartnerMoodTextKey
+import com.fenrir.her.ui.component.CoupleMoodPickerSheet
 import com.fenrir.her.playback.queues.YouTubeQueue
 import com.fenrir.her.ui.component.IconButton
 import com.fenrir.her.ui.screens.Screens
@@ -193,6 +198,14 @@ fun CoupleSpaceScreen(
   var sharedSongsJson by rememberPreference(CoupleSharedSongsKey, "[]")
   var loveNotesJson by rememberPreference(CoupleLoveNotesKey, "[]")
   var dailyAnswersJson by rememberPreference(CoupleDailyAnswersKey, "{}")
+  var myMoodEmoji by rememberPreference(CoupleMyMoodEmojiKey, "✨")
+  var myMoodText by rememberPreference(CoupleMyMoodTextKey, "")
+  val (partnerMoodEmoji) = rememberPreference(CouplePartnerMoodEmojiKey, "💕")
+  val (partnerMoodText) = rememberPreference(CouplePartnerMoodTextKey, "")
+  val remoteMood by FirebaseCoupleSync.moodFlow.collectAsState()
+  val displayPartnerMoodEmoji = remoteMood?.emoji ?: partnerMoodEmoji
+  val displayPartnerMoodText = remoteMood?.moodText ?: partnerMoodText
+  var showMoodPickerSheet by remember { mutableStateOf(false) }
 
   val role = remember(accountEmail, coupleRolePref) {
     if (coupleRolePref == "HER") CoupleAuthGuard.CoupleRole.HER
@@ -225,12 +238,12 @@ fun CoupleSpaceScreen(
 
   LaunchedEffect(isPaired, myCode, myName, role) {
     if (!isPaired && myCode.isNotBlank()) {
-      var loopCount = 0
+      var isRegistered = false
       while (!isPaired) {
-        if (loopCount % 5 == 0) {
+        if (!isRegistered) {
           FirebaseCoupleSync.registerInvite(myCode, role.name, myName, customFirebaseUrl)
+          isRegistered = true
         }
-        loopCount++
         val match = FirebaseCoupleSync.checkInviteMatch(myCode, customFirebaseUrl)
         if (match != null && match.matched && match.spaceId.isNotBlank()) {
           partnerCode = match.partnerCode
@@ -279,7 +292,8 @@ fun CoupleSpaceScreen(
 
   LaunchedEffect(spaceId) {
     if (spaceId.isNotBlank()) {
-      FirebaseCoupleSync.subscribe("her_music/space/${spaceId.trim()}/radio")
+      FirebaseCoupleSync.subscribeSpace(spaceId)
+      FirebaseCoupleSync.fetchLatestMood(spaceId)
       FirebaseCoupleSync.radioFlow.collect { remoteRadio ->
         if (remoteRadio != null) {
           broadcastJson = RadioBroadcastSerialization.serialize(remoteRadio)
@@ -432,6 +446,33 @@ fun CoupleSpaceScreen(
       dismissButton = {
         TextButton(onClick = { showEditNamesDialog = false }) {
           Text("Cancel")
+        }
+      }
+    )
+  }
+
+  if (showMoodPickerSheet) {
+    CoupleMoodPickerSheet(
+      currentEmoji = myMoodEmoji,
+      currentText = myMoodText,
+      partnerName = partnerName,
+      onDismiss = { showMoodPickerSheet = false },
+      onSaveMood = { emoji, text ->
+        myMoodEmoji = emoji
+        myMoodText = text
+        if (isPaired && spaceId.isNotBlank()) {
+          coroutineScope.launch {
+            FirebaseCoupleSync.broadcastMood(
+              spaceId = spaceId,
+              mood = CoupleMood(
+                senderRole = role.name,
+                senderName = myName,
+                emoji = emoji,
+                moodText = text,
+                timestamp = System.currentTimeMillis()
+              )
+            )
+          }
         }
       }
     )
@@ -639,12 +680,102 @@ fun CoupleSpaceScreen(
               }
 
               item {
+                Card(
+                  modifier = Modifier.fillMaxWidth(),
+                  shape = RoundedCornerShape(24.dp),
+                  colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                  )
+                ) {
+                  Column(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      ) {
+                        Text(myMoodEmoji, fontSize = 20.sp)
+                        Text(
+                          text = "Status & Mood 💕",
+                          style = MaterialTheme.typography.titleMedium,
+                          fontWeight = FontWeight.Bold
+                        )
+                      }
+                      Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.clickable { showMoodPickerSheet = true }
+                      ) {
+                        Text(
+                          text = "Update Mood ✨",
+                          style = MaterialTheme.typography.labelSmall,
+                          color = MaterialTheme.colorScheme.onPrimaryContainer,
+                          fontWeight = FontWeight.Bold,
+                          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                      }
+                    }
+
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                      Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                        modifier = Modifier.weight(1f).clickable { showMoodPickerSheet = true }
+                      ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                          Text(text = "You", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(myMoodEmoji, fontSize = 18.sp)
+                            Text(
+                              text = myMoodText.ifBlank { "Tap to set vibe" },
+                              style = MaterialTheme.typography.bodySmall,
+                              maxLines = 1,
+                              overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                          }
+                        }
+                      }
+
+                      Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                        modifier = Modifier.weight(1f)
+                      ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                          Text(text = partnerName, style = MaterialTheme.typography.labelSmall, color = Color(0xFFFF4081), fontWeight = FontWeight.Bold)
+                          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(displayPartnerMoodEmoji, fontSize = 18.sp)
+                            Text(
+                              text = displayPartnerMoodText.ifBlank { "Waiting for vibes..." },
+                              style = MaterialTheme.typography.bodySmall,
+                              maxLines = 1,
+                              overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              item {
                 CouplePlayTogetherCard(
                   partnerName = partnerName,
                   role = role,
                   spaceId = spaceId,
                   customFirebaseUrl = customFirebaseUrl,
-                  playerConnection = playerConnection
+                  playerConnection = playerConnection,
+                  myName = myName
                 )
               }
 

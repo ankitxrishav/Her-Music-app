@@ -51,7 +51,7 @@ object CustomPushNotificationManager {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    val displayTitle = if (!sender.isNullOrBlank()) "💌 $sender: $title" else "💌 $title"
+    val displayTitle = if (!sender.isNullOrBlank()) "$sender: $title" else title
 
     val builder = NotificationCompat.Builder(context, CHANNEL_ID)
       .setSmallIcon(R.drawable.favorite)

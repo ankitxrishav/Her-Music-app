@@ -10,9 +10,11 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import androidx.datastore.preferences.core.edit
 import androidx.core.app.NotificationCompat
 import com.fenrir.her.MainActivity
 import com.fenrir.her.R
+import com.fenrir.her.constants.CoupleMyCodeKey
 import com.fenrir.her.constants.CoupleSpaceIdKey
 import com.fenrir.her.echomusic.UpdateNotificationHelper
 import com.fenrir.her.utils.dataStore
@@ -44,6 +46,7 @@ class HerNotificationService : Service() {
   private val isWorkStarted = AtomicBoolean(false)
 
   @Volatile private var currentSpaceId: String = ""
+  @Volatile private var currentPairCode: String = ""
   @Volatile private var lastTime: Long = (System.currentTimeMillis() / 1000L) - 300L
   @Volatile private var currentCall: Call? = null
 
@@ -131,7 +134,9 @@ class HerNotificationService : Service() {
 
     serviceScope.launch {
       try {
-        currentSpaceId = dataStore.data.first()[CoupleSpaceIdKey].orEmpty()
+        val prefs = dataStore.data.first()
+        currentSpaceId = prefs[CoupleSpaceIdKey].orEmpty()
+        currentPairCode = prefs[CoupleMyCodeKey].orEmpty()
       } catch (_: Exception) {}
 
       try {
@@ -142,18 +147,19 @@ class HerNotificationService : Service() {
       } catch (_: Exception) {}
 
       startPolling()
-      startPeriodicSync()
+      startDataStoreObserver()
     }
   }
 
-  private fun startPeriodicSync() {
+  private fun startDataStoreObserver() {
     serviceScope.launch {
-      while (isActive) {
-        delay(30_000L)
+      dataStore.data.collect { prefs ->
         try {
-          val spaceId = dataStore.data.first()[CoupleSpaceIdKey].orEmpty()
-          if (spaceId != currentSpaceId) {
+          val spaceId = prefs[CoupleSpaceIdKey].orEmpty()
+          val pairCode = prefs[CoupleMyCodeKey].orEmpty()
+          if (spaceId != currentSpaceId || pairCode != currentPairCode) {
             currentSpaceId = spaceId
+            currentPairCode = pairCode
             if (spaceId.isNotBlank()) {
               FirebaseCoupleSync.subscribeSpace(spaceId)
             }
@@ -179,13 +185,20 @@ class HerNotificationService : Service() {
       var backoffMs = 2_000L
       while (isActive) {
         val spaceId = currentSpaceId
+        val pairCode = currentPairCode
         val topics = buildList {
           add("her_music_broadcast_notify")
           add("her_music_broadcast_update")
+          if (pairCode.isNotBlank()) {
+            add("her_music_invite_${pairCode}")
+            add("her_music_invite_${pairCode}_notify")
+          }
           if (spaceId.isNotBlank()) {
             add("her_music_space_${spaceId}_notify")
             add("her_music_space_${spaceId}_sync_req")
             add("her_music_space_${spaceId}_sync_resp")
+            add("her_music_space_${spaceId}_mood")
+            add("her_music_space_${spaceId}_live_event")
           }
         }
         val url = "https://ntfy.sh/${topics.joinToString(",")}/json?since=$lastTime"
@@ -198,7 +211,7 @@ class HerNotificationService : Service() {
             if (response.isSuccessful) {
               backoffMs = 2_000L
               val source = response.body.source()
-              while (!source.exhausted() && isActive && spaceId == currentSpaceId) {
+              while (!source.exhausted() && isActive && spaceId == currentSpaceId && pairCode == currentPairCode) {
                 val line = source.readUtf8Line() ?: break
                 if (line.isBlank() || line.startsWith(":")) continue
                 handleNtfyMessage(line)
@@ -243,7 +256,34 @@ class HerNotificationService : Service() {
         if (message.isNotBlank()) {
           when {
             topic == "her_music_broadcast_update" -> {
-              UpdateNotificationHelper.showUpdateNotification(this, message)
+              val cleanVersion = message.removePrefix("v").removePrefix("b").trim()
+              val currentVersion = com.fenrir.her.BuildConfig.VERSION_NAME.removePrefix("v").removePrefix("b").trim()
+              if (com.fenrir.her.echomusic.updater.isNewerVersion(cleanVersion, currentVersion)) {
+                UpdateNotificationHelper.showUpdateNotification(this, message)
+              }
+            }
+            topic.startsWith("her_music_invite_") && !topic.endsWith("_notify") -> {
+              try {
+                val parsed = jsonParser.decodeFromString<CoupleInvite>(message)
+                if (parsed.matched && parsed.spaceId.isNotBlank()) {
+                  serviceScope.launch {
+                    dataStore.edit { prefs ->
+                      prefs[com.fenrir.her.constants.CoupleIsPairedKey] = true
+                      prefs[com.fenrir.her.constants.CouplePartnerCodeKey] = parsed.partnerCode
+                      if (parsed.partnerName.isNotBlank()) {
+                        prefs[com.fenrir.her.constants.CouplePartnerNameKey] = parsed.partnerName
+                      }
+                      prefs[com.fenrir.her.constants.CoupleSpaceIdKey] = parsed.spaceId
+                      prefs[com.fenrir.her.constants.CoupleLinkedTimestampKey] = parsed.timestamp
+                    }
+                  }
+                  CustomPushNotificationManager.showNotification(
+                    this,
+                    "💕 Partner Connected!",
+                    "${parsed.partnerName.ifBlank { "Partner" }} linked with your space! Welcome to your space together 💕"
+                  )
+                }
+              } catch (_: Exception) {}
             }
             topic.endsWith("_sync_req") -> {
               try {
@@ -256,6 +296,24 @@ class HerNotificationService : Service() {
               try {
                 val syncResp = jsonParser.decodeFromString<CoupleSyncResponse>(message)
                 FirebaseCoupleSync.onSyncResponseReceived(syncResp)
+              } catch (_: Exception) {}
+            }
+            topic.endsWith("_mood") -> {
+              try {
+                val mood = jsonParser.decodeFromString<CoupleMood>(message)
+                serviceScope.launch {
+                  dataStore.edit { prefs ->
+                    prefs[com.fenrir.her.constants.CouplePartnerMoodEmojiKey] = mood.emoji
+                    prefs[com.fenrir.her.constants.CouplePartnerMoodTextKey] = mood.moodText
+                    prefs[com.fenrir.her.constants.CouplePartnerMoodTimestampKey] = mood.timestamp
+                  }
+                }
+              } catch (_: Exception) {}
+            }
+            topic.endsWith("_live_event") -> {
+              try {
+                val live = jsonParser.decodeFromString<CoupleLivePlayback>(message)
+                CouplePlaybackSyncManager.applyLiveEvent(live)
               } catch (_: Exception) {}
             }
             else -> {

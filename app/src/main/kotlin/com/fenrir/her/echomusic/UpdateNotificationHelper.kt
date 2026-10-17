@@ -15,11 +15,15 @@ import androidx.core.net.toUri
 import com.fenrir.her.MainActivity
 import com.fenrir.her.R
 
+import com.fenrir.her.BuildConfig
+import com.fenrir.her.echomusic.updater.isNewerVersion
+
 object UpdateNotificationHelper {
   private const val CHANNEL_ID = "updates"
   private const val NOTIFICATION_ID = 1001
 
   fun showUpdateNotification(context: Context, versionName: String) {
+    if (!isNewerVersion(versionName, BuildConfig.VERSION_NAME)) return
     val nm = context.getSystemService(NotificationManager::class.java)
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

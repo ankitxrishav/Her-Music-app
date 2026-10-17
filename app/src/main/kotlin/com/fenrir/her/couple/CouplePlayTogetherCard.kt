@@ -63,6 +63,7 @@ fun CouplePlayTogetherCard(
   customFirebaseUrl: String?,
   playerConnection: PlayerConnection?,
   modifier: Modifier = Modifier,
+  myName: String = if (role == CoupleAuthGuard.CoupleRole.HER) "Her" else "Him",
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -325,7 +326,7 @@ fun CouplePlayTogetherCard(
                 val req = CoupleSyncRequest(
                   requestId = System.currentTimeMillis().toString(),
                   requesterRole = role.name,
-                  requesterName = if (role == CoupleAuthGuard.CoupleRole.HER) "Her" else "Him",
+                  requesterName = myName.ifBlank { if (role == CoupleAuthGuard.CoupleRole.HER) "Her" else "Him" },
                   songId = meta.id,
                   title = meta.title,
                   artist = meta.artists.joinToString { it.name },
